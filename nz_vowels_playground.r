@@ -201,7 +201,7 @@ for (i in 1:length(synthesise_at_yobs)) {
 
 system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
 
-animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(dirname, "mouth_m_vid.mp4")))
+animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, "mouth_m_vid.mp4")))
 
 ###
 ### PRICE FEMALES
@@ -291,7 +291,7 @@ for (i in 1:length(synthesise_at_yobs)) {
 
 system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
 
-animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(dirname, "mouth_f_vid.mp4")))
+animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, "mouth_f_vid.mp4")))
 
 
 ###
@@ -399,7 +399,7 @@ for (i in 1:length(synthesise_at_yobs)) {
 
 system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
 
-animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(dirname, "mouth_m_vid.mp4")))
+animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, "mouth_m_vid.mp4")))
 
 ### MOUTH FEMALE
 
@@ -488,5 +488,5 @@ for (i in 1:length(synthesise_at_yobs)) {
 
 system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
 
-animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(dirname, "mouth_f_vid.mp4")))
+animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, "mouth_f_vid.mp4")))
 
