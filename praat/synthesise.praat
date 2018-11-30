@@ -1,6 +1,8 @@
 form Synthesise
 	sentence filename_in
 	sentence filename_out
+    real f0_max
+	real f0_min
 endform
 
 #Create Sound from formula: "sound_1", 1, 0.0, 0.1, 44100, "0"
@@ -24,8 +26,8 @@ for t from 1 to table_nrow
 
 # generate source
 Create PitchTier: "f0", 0.00, dur
-Add point: 0.00, 130
-Add point: dur, 110
+Add point: 0.00, f0_max
+Add point: dur, f0_min
 
 To Sound (phonation): 44100, 0.6, 0.05, 0.7, 0.03, 3.0, 4.0, 0
 

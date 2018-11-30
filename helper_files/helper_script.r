@@ -12,8 +12,45 @@ price_all <- dplyr::select(price_all, intersect(colnames(price_all), colnames(mo
 write_csv(price_all, "~/documents/research/current/2018/nz_vowels/raw_data/price.csv")
 
 mouth_MU <- read_csv("~/downloads/mouth_MU.csv")
-mouth_IA <- read_csv("~/downloads/mouth_IA.csv")
-mouth_CC <- read_csv("~/downloads/mouth_CC.csv")
+mouth_cols <- cols(
+  SearchName = col_character(),
+  Number = col_double(),
+  Transcript = col_character(),
+  Speaker = col_character(),
+  Corpus = col_character(),
+  participant_gender = col_character(),
+  participant_year_of_birth = col_double(),
+  Line = col_double(),
+  LineEnd = col_double(),
+  MatchId = col_character(),
+  TargetId = col_character(),
+  URL = col_character(),
+  `Before Match` = col_character(),
+  Text = col_character(),
+  `After Match` = col_character(),
+  `Target syllables/sec for Speaker` = col_double(),
+  `Target syllables/sec for Speaker in Transcript` = col_double(),
+  `Target syllables/sec for Transcript` = col_double(),
+  `syllables/sec` = col_double(),
+  `Target syllables/sec start` = col_double(),
+  `Target syllables/sec end` = col_double(),
+  `Target phonemic transcription` = col_character(),
+  `Target lemma` = col_character(),
+  `Target words since last mention` = col_character(),
+  `Target last wordform instance same speaker (sec. ago)` = col_character(),
+  `Target last lemma instance same speaker (sec. ago)` = col_character(),
+  `Target last wordform instance any speaker (sec. ago)` = col_character(),
+  `Target last lemma instance any speaker (sec. ago)` = col_character(),
+  `Target frequency (celex lemma)` = col_double(),
+  `Target freq (celex wordform)` = col_double(),
+  `Target orthography` = col_character(),
+  `Match segments` = col_character(),
+  `Target segments` = col_double(),
+  `Target segments start` = col_double(),
+  `Target segments end` = col_double()
+)
+mouth_IA <- read_csv("~/downloads/mouth_IA.csv", col_types=mouth_cols)
+mouth_CC <- read_csv("~/downloads/mouth_CC.csv", col_types=mouth_cols)
 
 mouth_all <- rbind(mouth_MU, mouth_IA, mouth_CC)
 write_csv(mouth_all, "~/downloads/mouth.csv")
