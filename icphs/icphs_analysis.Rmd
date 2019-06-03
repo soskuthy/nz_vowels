@@ -177,7 +177,7 @@ mouth <- readRDS("../final_data/mouth_full.rds")
 mouth_avgs <- readRDS("../final_data/mouth_averaged.rds")
 
 # binding by-speaker avgs into single data set for price / mouth
-price_avgs$vowel <- "price"
+price_avgs$vowel <- "price" 
 mouth_avgs$vowel <- "mouth"
 price_mouth_avgs <- rbind(price_avgs, mouth_avgs)
 
