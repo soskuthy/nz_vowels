@@ -280,6 +280,86 @@ system.time({
 saveRDS(price_f2_mod, "../models/price_f2_mod.rds")
 ```
 
+
+```{r}
+mouth_vd$dur_log <- log(mouth_vd$dur)
+mouth_vd$previous_f <- factor(mouth_vd$previous)
+mouth_vd$following_f <- factor(mouth_vd$following)
+mouth_vd$speaker_f <- factor(mouth_vd$speaker)
+
+mouth_vd$sex <- factor(mouth_vd$sex)
+
+mouth_vd <- mouth_vd %>% 
+  group_by(id) %>%
+  mutate(measurement_no_min=min(measurement_no)) %>%
+  ungroup() %>%
+  mutate(AR_start=measurement_no==measurement_no_min)
+
+mouth_vd_sub <- mouth_vd[mouth_vd$speaker %in% sample(unique(mouth_vd$speaker), 50, replace=F),]
+
+system.time({
+  mouth_f1_mod_no_AR <- 
+    bam(f1 ~ sex +
+          s(dur_log, k=5, by=sex) +
+          s(measurement_no, k=11, by=sex) + 
+          s(yob, by=sex, k=10) +
+          ti(measurement_no, yob, k=c(11,10), by=sex) +
+          ti(measurement_no, dur_log, k=c(11,5), by=sex) +
+          s(measurement_no, previous_f, bs="fs", m=1, k=10) +
+          s(measurement_no, following_f, bs="fs", m=1, k=10) +
+          s(measurement_no, speaker_f, bs="fs", m=1, k=10),
+        data=mouth_vd_sub, discrete=T, nthreads=6)})
+
+rho_est <- start_value_rho(mouth_f1_mod_no_AR)
+
+system.time({
+  mouth_f1_mod <- 
+    bam(f1 ~ sex +
+          s(dur_log, k=5, by=sex) +
+          s(measurement_no, k=11, by=sex) + 
+          s(yob, by=sex, k=10) +
+          ti(measurement_no, yob, k=c(11,10), by=sex) +
+          ti(measurement_no, dur_log, k=c(11,5), by=sex) +
+          s(measurement_no, previous_f, bs="fs", m=1, k=10) +
+          s(measurement_no, following_f, bs="fs", m=1, k=10) +
+          s(measurement_no, speaker_f, bs="fs", m=1, k=10),
+        data=mouth_vd, discrete=T, nthreads=6, 
+        rho=rho_est, AR.start=mouth_vd$AR_start)})
+#summary(mouth_f1_mod)
+saveRDS(mouth_f1_mod, "../models/mouth_f1_mod.rds")
+## F2 models
+
+system.time({
+  mouth_f2_mod_no_AR <- 
+    bam(f2 ~ sex +
+          s(dur_log, k=5, by=sex) +
+          s(measurement_no, k=11, by=sex) + 
+          s(yob, by=sex, k=10) +
+          ti(measurement_no, yob, k=c(11,10), by=sex) +
+          ti(measurement_no, dur_log, k=c(11,5), by=sex) +
+          s(measurement_no, previous_f, bs="fs", m=1, k=10) +
+          s(measurement_no, following_f, bs="fs", m=1, k=10) +
+          s(measurement_no, speaker_f, bs="fs", m=1, k=10),
+        data=mouth_vd_sub, discrete=T, nthreads=6)})
+
+rho_est <- start_value_rho(mouth_f2_mod_no_AR)
+
+system.time({
+  mouth_f2_mod <- 
+    bam(f2 ~ sex +
+          s(dur_log, k=5, by=sex) +
+          s(measurement_no, k=11, by=sex) + 
+          s(yob, by=sex, k=10) +
+          ti(measurement_no, yob, k=c(11,10), by=sex) +
+          ti(measurement_no, dur_log, k=c(11,5), by=sex) +
+          s(measurement_no, previous_f, bs="fs", m=1, k=10) +
+          s(measurement_no, following_f, bs="fs", m=1, k=10) +
+          s(measurement_no, speaker_f, bs="fs", m=1, k=10),
+        data=mouth_vd, discrete=T, nthreads=6, 
+        rho=rho_est, AR.start=mouth_vd$AR_start)})
+saveRDS(mouth_f2_mod, "../models/mouth_f2_mod.rds")
+```
+
 ### Creating video summary
 
 ```{r}
