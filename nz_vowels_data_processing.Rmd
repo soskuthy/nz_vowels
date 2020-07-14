@@ -51,8 +51,12 @@ price <- price_wide %>%
   filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>% 
   ungroup() %>%
   arrange(id, measurement_no) %>%
-  mutate(id=id_str) %>% dplyr::select(-`id_str`)
-  
+  mutate(id=id_str) %>% 
+  dplyr::select(-`id_str`) %>%
+  group_by(speaker) %>%
+  mutate(speaker_n=length(unique(id))) %>%
+  ungroup()
+
 # creating a PDF for checking formant tracking by speaker
 if (FALSE) {
   pdf("checking_price.pdf", onefile=T, width=7.3, height=10)

@@ -88,10 +88,15 @@ vowels_avgs_vd$vowel_sex_formant <- interaction(vowels_avgs_vd$vowel, vowels_avg
 vowels_avgs_vd$dur_avg_log <- log(vowels_avgs_vd$dur_avg)
 
 # focus on pre-vd only for main data
-price_vd <- filter(price, !following_voiceless)
-mouth_vd <- filter(mouth, !following_voiceless)
-face_vd <- filter(face, !following_voiceless)
-goat_vd <- filter(goat, !following_voiceless)
+face <- readRDS("../final_data/face_full.rds")
+goat <- readRDS("../final_data/goat_full.rds")
+price <- readRDS("../final_data/price_full.rds")
+mouth <- readRDS("../final_data/mouth_full.rds")
+
+#price_vd <- filter(price, !following_voiceless)
+#mouth_vd <- filter(mouth, !following_voiceless)
+#face_vd <- filter(face, !following_voiceless)
+#goat_vd <- filter(goat, !following_voiceless)
 ```
 
 ## GAM modelling of per-speaker avg contours
@@ -307,4 +312,284 @@ for (y in unique(newdat_f1f2$yob)) {
           legend.position = "none")
   ggsave(paste0("graphs/vowel_chart_", y, ".pdf"), width=2.66, height=2)
 }
+```
+
+## Making video for talk
+
+So the idea is to create an animation with x=time y=F1/2 plots on the left and x=F2 y=F1 plots on the right with superimposed sound that reflects the grouping PRICE-MOUTH vs. FACE-GOAT. I'd also like to include some sort of markers to show 25%, 50% and 75% of vowel duration (e.g. notches?). Would also be nice to have labels for the vowels in the X=F2 plots. Best approach seems to be to create first animation (x=time) separately from second animation (x=F2), making sure that they are aligned by YOB; and then generate sound separately and add it on. Will be a wild ride!
+
+```{r}
+# LEFT PANEL
+
+# data frame for predictions
+newdat <- expand.grid(measurement_no=seq(1,11,length.out=50),
+                      yob=seq(min(vowels_avgs_vd$yob),
+                              max(vowels_avgs_vd$yob),
+                              1),
+                      vowel_sex_formant=unique(vowels_avgs_vd$vowel_sex_formant),
+                      dur_avg_log=median(vowels_avgs_vd$dur_avg_log),
+                      hz=0)
+
+#obtaining predictions from model
+preds_hz <- predict(pm_f1f2_avg_mod, newdata=newdat)
+newdat$hz <- preds_hz
+
+# splitting vowel_sex_formant into its components for ggplot
+newdat$vowel <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][1]))
+newdat$vowel <- toupper(newdat$vowel)
+newdat$sex <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][2]))
+newdat$sex <- ifelse(newdat$sex=='M', "male", "female")
+newdat$formant <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][3]))
+newdat$measurement_no <- (newdat$measurement_no - 1)*10
+
+newdat <- newdat %>% 
+  mutate(vowel=as.ordered(factor(vowel, levels=c("PRICE","MOUTH", "FACE","GOAT"))),
+         sex=factor(sex))
+
+# creating ggplot
+pleft <- ggplot(newdat, aes(x=measurement_no, y=hz, group=formant, color=vowel, frame=yob)) +
+  facet_grid(rows=vars(sex), cols=vars(vowel), switch="y") +
+  geom_line(lwd=1) +
+  #scale_color_manual(values=c("#998ec3","#f1a340")) +
+  scale_x_continuous(breaks=seq(0,100,25),
+                     labels=c("", "25%", "50%", "75%", "")) +
+  #scale_y_continuous(position="right") +
+  scale_color_viridis_d(guide=F) +
+  xlab("measurement point (% vowel duration)") +
+  ylab("frequency (Bark)") +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text.y=element_text(size=14),
+        axis.text.x=element_text(size=14, hjust=1, angle=45),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        strip.placement="inside",
+        legend.position = "none",
+        plot.margin=margin(r=0.5, unit="npc")) +
+  transition_time(yob) +
+  ease_aes('linear') +
+  labs(title = 'Year of birth: {frame_time}')
+animate(pleft, nframes=length(unique(newdat$yob)), renderer=av_renderer(file="animations/all_changes_left.mp4"), width=960, height=480)
+#animate(pleft, nframes=length(unique(newdat$yob)))
+#ggsave("animations/left_panel.mov", width=7, height=7)
+
+```
+
+```{r}
+frame_no = length(unique(newdat$yob))
+fps = 10
+
+# RIGHT PANEL
+
+library(phonTools)
+data(h95)
+
+# data frame for predictions
+newdat <- expand.grid(measurement_no=seq(1,11,length.out=50),
+                      yob=seq(min(vowels_avgs_vd$yob),
+                              max(vowels_avgs_vd$yob),
+                              1),
+                      vowel_sex_formant=unique(vowels_avgs_vd$vowel_sex_formant),
+                      dur_avg_log=median(vowels_avgs_vd$dur_avg_log),
+                      hz=0)
+
+#obtaining predictions from model
+preds_hz <- predict(pm_f1f2_avg_mod, newdata=newdat)
+newdat$hz <- preds_hz
+
+# splitting vowel_sex_formant into its components for ggplot
+newdat$vowel <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][1]))
+newdat$vowel <- toupper(newdat$vowel)
+newdat$sex <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][2]))
+newdat$sex <- ifelse(newdat$sex=='M', "male", "female")
+newdat$formant <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][3]))
+newdat$measurement_no <- (newdat$measurement_no - 1)*10
+
+#newdat$vowel_sex <- unlist(lapply(str_split(newdat$vowel_sex_formant, "[.]"), function (x) return(paste(x[1], x[2], sep="."))))
+newdat_f1f2 <- newdat %>%
+  dplyr::select(-vowel_sex_formant) %>%
+  spread(formant, hz) %>%
+  arrange(sex, vowel, measurement_no) %>%
+  mutate(vowel=as.ordered(factor(vowel, levels=c("PRICE","MOUTH","FACE","GOAT"))))
+
+newdat_f1f2_quantiles <- newdat_f1f2 %>%
+  filter(measurement_no %in% quantile(unique(measurement_no), probs=c(0.25, 0.5, 0.75), type=1))
+  
+
+
+corner_vs <- h95 %>%
+  filter(vowel %in% c("i","u","A"), type %in% c("m","w")) %>%
+  group_by(vowel, type) %>%
+  summarise(f1bark=mean(bark(f1)),
+            f2bark=mean(bark(f2)),
+            f3bark=mean(bark(f3))) %>%
+  ungroup() %>%
+  mutate(vowel=as.character(recode(vowel, i="i", u="u", A="a")),
+         sex=recode(type, w="female", m="male"))
+
+yobs <- rep(seq(min(newdat$yob), max(newdat$yob), 1), each=nrow(corner_vs))
+corner_vs <- corner_vs[rep(1:nrow(corner_vs), times=length(unique(newdat$yob))),]
+corner_vs$yob <- yobs
+
+pright <- ggplot(newdat_f1f2, aes(x=f2_avg, y=f1_avg, group=vowel, size=measurement_no, col=vowel, frame=yob)) +
+    facet_grid(rows=vars(sex)) +
+    geom_path(lineend="round") +
+    geom_point(data=newdat_f1f2_quantiles, size=2) +
+    #geom_text(data=corner_vs, aes(x=f2bark, y=f1bark, label=vowel), col="black", size=5) +
+    geom_text(data=corner_vs, aes(x=f2bark, y=f1bark, label=vowel), col="grey", size=8) +
+    scale_color_viridis_d() +
+    scale_x_reverse(limits=c(15.4,8)) +
+    scale_y_reverse(limits=c(9.25,2.75)) +
+    scale_alpha(guide=F) +
+    scale_size(guide=F, range=c(0.2, 1.7)) +
+    theme_bw() +
+    theme(axis.title=element_blank(),
+          axis.text=element_blank(),
+          axis.ticks=element_blank(),
+          axis.line=element_blank(),
+          panel.border=element_blank(),
+          panel.grid=element_blank(),
+          strip.text.y=element_blank(),
+          legend.position = "none") +
+  transition_time(yob) +
+  ease_aes('linear')# +
+  #labs(title = 'Year of birth: {frame_time}')
+animate(pright, nframes=length(unique(newdat$yob)), renderer=av_renderer(file="animations/all_changes_right.mp4"), width=240, height=480)
+#animate(pright, nframes=)
+#ggsave(paste0("graphs/vowel_chart_", y, ".pdf"), width=2.66, height=2)
+```
+
+Creating the corresponding sound.
+
+```{r}
+# generating sound - all
+    
+anim_dur <- frame_no/fps
+audio_samples <- 5
+audio_dur <- 0.27
+edge_window <- 0.2
+short_break_dur <- 0.25
+total_dur <- audio_dur*4 + short_break_dur*3
+
+pause_dur <- (anim_dur - 2*edge_window - audio_samples*total_dur) / (audio_samples-1)
+
+
+yob_min <- min(newdat$yob)
+yob_max <- max(newdat$yob)
+yob_range <- yob_max - yob_min
+synthesise_at_yobs <- round(yob_min + yob_range*(seq(edge_window, edge_window + (audio_samples-1)*(total_dur + pause_dur), total_dur + pause_dur)/anim_dur))
+
+dirname <- "/users/soskuthy/documents/research/current/2018/nz_vowels/nwav/animations/temp_sounds/"
+
+#vid.dirname <- "../videos/"
+outname_dir <- "/users/soskuthy/documents/research/current/2018/nz_vowels/nwav/animations/temp_sounds/"
+final_outname <- "/users/soskuthy/documents/research/current/2018/nz_vowels/nwav/animations/all_Vs_continuum.wav"
+s <- "female"
+vowels <- c("PRICE","MOUTH","FACE","GOAT")
+
+for (i in 1:length(synthesise_at_yobs)) {
+  v_num <- 0
+  unlink(paste0(dirname, i, "/", "*.wav"))  
+  for (v in vowels) {
+    v_num <- v_num + 1 
+    at_yob <- synthesise_at_yobs[i]
+    f1bark <- filter(newdat, yob==at_yob, sex==s, vowel==v, formant=="f1_avg")$hz
+    f2bark <- filter(newdat, yob==at_yob, sex==s, vowel==v, formant=="f2_avg")$hz
+    if (s=="female") {
+      to_formant_track(paste0(dirname, i, "/", sprintf("temp%.3d.wav", v_num)), f1bark, f2bark, audio_dur, f3=2950, f4=3850, f5=4850, f6=5800, f0_max=250, f0_min=200)
+    } else {
+      to_formant_track(paste0(dirname, i, "/", sprintf("temp%.3d.wav", v_num)), f1bark, f2bark, audio_dur)
+    }
+  }
+}
+
+for (i in 1:audio_samples) {
+  outname <- paste0(outname_dir, "vowel_block_", i, ".wav")
+  system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "../praat/concatenate.praat ", '"', dirname, i, "/", '" "', outname, '" ', 0.001, ' ', short_break_dur))
+}
+
+system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "../praat/concatenate.praat ", '"', dirname, '" "', final_outname, '" ', edge_window, ' ', pause_dur))
+```
+
+## Single-point video
+
+```{r}
+# RIGHT PANEL
+
+library(phonTools)
+data(h95)
+
+# data frame for predictions
+newdat <- expand.grid(measurement_no=4,
+                      yob=seq(min(vowels_avgs_vd$yob),
+                              max(vowels_avgs_vd$yob),
+                              1),
+                      vowel_sex_formant=unique(vowels_avgs_vd$vowel_sex_formant),
+                      dur_avg_log=median(vowels_avgs_vd$dur_avg_log),
+                      hz=0)
+
+frame_no = length(unique(newdat$yob))
+fps = 10
+
+#obtaining predictions from model
+preds_hz <- predict(pm_f1f2_avg_mod, newdata=newdat)
+newdat$hz <- preds_hz
+
+# splitting vowel_sex_formant into its components for ggplot
+newdat$vowel <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][1]))
+newdat$vowel <- toupper(newdat$vowel)
+newdat$sex <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][2]))
+newdat$sex <- ifelse(newdat$sex=='M', "male", "female")
+newdat$formant <- unlist(lapply(as.character(newdat$vowel_sex_formant), function (x) strsplit(x, split="[.]")[[1]][3]))
+newdat$measurement_no <- (newdat$measurement_no - 1)*10
+
+#newdat$vowel_sex <- unlist(lapply(str_split(newdat$vowel_sex_formant, "[.]"), function (x) return(paste(x[1], x[2], sep="."))))
+newdat_f1f2 <- newdat %>%
+  dplyr::select(-vowel_sex_formant) %>%
+  spread(formant, hz) %>%
+  arrange(sex, vowel, measurement_no) %>%
+  mutate(vowel=as.ordered(factor(vowel, levels=c("PRICE","MOUTH","FACE","GOAT"))))
+
+corner_vs <- h95 %>%
+  filter(vowel %in% c("i","u","A"), type %in% c("m","w")) %>%
+  group_by(vowel, type) %>%
+  summarise(f1bark=mean(bark(f1)),
+            f2bark=mean(bark(f2)),
+            f3bark=mean(bark(f3))) %>%
+  ungroup() %>%
+  mutate(vowel=as.character(recode(vowel, i="i", u="u", A="a")),
+         sex=recode(type, w="female", m="male"))
+
+yobs <- rep(seq(min(newdat$yob), max(newdat$yob), 1), each=nrow(corner_vs))
+corner_vs <- corner_vs[rep(1:nrow(corner_vs), times=length(unique(newdat$yob))),]
+corner_vs$yob <- yobs
+
+single_point <- ggplot(newdat_f1f2, aes(x=f2_avg, y=f1_avg, col=vowel, frame=yob)) +
+    facet_grid(cols=vars(sex)) +
+    geom_label(aes(label=vowel), size=7) +
+    #geom_text(data=corner_vs, aes(x=f2bark, y=f1bark, label=vowel), col="black", size=5) +
+    geom_text(data=corner_vs, aes(x=f2bark, y=f1bark, label=vowel), col="grey", size=8) +
+    scale_color_viridis_d() +
+    scale_x_reverse(limits=c(15.4,8)) +
+    scale_y_reverse(limits=c(9.25,2.75)) +
+    theme_bw() +
+    theme(axis.title=element_blank(),
+          axis.text=element_blank(),
+          axis.ticks=element_blank(),
+          axis.line=element_blank(),
+          panel.border=element_blank(),
+          panel.grid=element_blank(),
+          strip.text.x=element_text(size=18, face="bold"),
+          strip.background=element_blank(),
+          legend.position = "none",
+          plot.title=element_text(size=18),
+          panel.background=element_rect(fill="#EAF0EF"),
+          plot.background=element_rect(fill="#EAF0EF")) +
+  transition_time(yob) +
+  ease_aes('linear') +
+  labs(title = 'Year of birth: {frame_time}')
+animate(single_point, nframes=length(unique(newdat$yob)), renderer=av_renderer(file="animations/single_point_changes.mp4"), width=720, height=480)
+#animate(pright, nframes=)
+#ggsave(paste0("graphs/vowel_chart_", y, ".pdf"), width=2.66, height=2)
 ```

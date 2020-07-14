@@ -59,13 +59,24 @@ trim_point = Get nearest zero crossing: 1, dur
 Extract part... 0.0 'trim_point' rectangular 1.0 0
 
 Rename... actual_sound
-#Create Sound from formula: "sound_2", 1, 0.0, 0.1, 44100, "0"
 
-#select Sound sound_1
-#plusObject: "Sound actual_sound"
-#plusObject: "Sound sound_2"
+new_dur = Get total duration
 
-#Concatenate
+Create IntensityTier... intensity 0 dur
+t0 = 0
+t1 = dur*0.02
+t2 = dur*0.92
+t3 = dur*0.99
+t4 = dur
+
+Add point... t0 70
+Add point... t1 80
+Add point... t2 79
+Add point... t3 75
+Add point... t4 60
+
+plusObject: "Sound actual_sound"
+Multiply... 1
 
 Play
 

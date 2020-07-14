@@ -60,13 +60,20 @@ to_formant_track <- function (fname, f1bark, f2bark, dur,
 Second, diabolically complicated function for identifying points of maximum convexity / concavity in trajectories.
 
 ```{r, include=F}
-find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NULL) {
+find_inflection <- function (xs, ys, k, groups, random_terms=NULL, convex=T, n=1000, plot=F, .pb=NULL) {
   if ((!is.null(.pb)) && inherits(.pb, "Progress") && (.pb$i < .pb$n)) 
     .pb$tick()$print()
   d <- data.frame(xs, ys, groups)
   d <- d[order(groups, xs),]
   d$start <- d$xs == min(d$xs)
   d$groups <- as.factor(d$groups)
+  
+  if (!is.null(random_terms)) {
+    d <- cbind(d, random_terms)
+    for (rt in colnames(random_terms)) {
+      d[,rt] <- as.factor(d[,rt])
+    }
+  }
   if (length(unique(groups)) < 3) {
     warning(paste0('too few trajectories (< 3), returning NA'))
     return(NA)
@@ -79,14 +86,36 @@ find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NU
     k <- length(unique(xs))
     warning(paste0('k reduced to ', k))
   }
-  
   # fit gamm with AR1 autoregressive error model
-  modAR <- tryCatch({
-    gamm(ys ~ s(xs, k=k, bs="cr"),
-              data=d, correlation=corAR1(form=~ xs | groups))
-    },
+  if (!is.null(random_terms)) {
+    formulaa <- as.formula(paste0("ys ~ s(xs, k=", k, ", bs='cr') + ", paste0(paste0("s(xs, ", colnames(random_terms), ", k=", k, ", bs='fs', m=2)"), collapse=" + ")))
+  } else {
+    formulaa <- as.formula(paste0("ys ~ s(xs, k=", k, ", bs='cr')"))
+  }
+  if (!is.null(random_terms) && ncol(random_terms) > 1) {
+    modnoAR <- tryCatch({
+     bam(formulaa,
+          data=d)
+     },
     error=function (x) NULL
-  )
+    )
+    if (!is.null(modnoAR)) {
+      rho_est <- start_value_rho(modnoAR)
+      modAR <- tryCatch({
+      bam(formulaa,
+            data=d, AR.start=d$start, rho=rho_est)
+      },
+      error=function (x) NULL
+      )
+    }
+  } else {
+    modAR <- #tryCatch({
+        gamm(formulaa, data=d, correlation=corAR1(form=~ xs | groups))#},
+      #error=function (x) NULL
+    #)
+    print(modAR)
+    modAR <- tryCatch({modAR$gam}, error=function (x) NULL)
+  }
   if (is.null(modAR)) {
     warning("model could not be fit to trajectories")
     return(NA)
@@ -95,27 +124,32 @@ find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NU
   new_xs <- seq(min(d$xs), max(d$xs), length.out=n)
   newdat <- data.frame(xs=new_xs,
                        ys=0)
-  
+  for (rt in colnames(random_terms)) {
+    newdat[,rt] <- random_terms[1,rt]
+  }
   # get first derivative of smooth
   eps <- 1e-04
-  X0 <- predict(modAR$gam, newdat, type = 'lpmatrix')
+  X0 <- predict(modAR, newdat, type = 'lpmatrix', 
+                exclude=paste0("s(xs,",colnames(random_terms),")"))
   newdat_eps_1 <- newdat
   newdat_eps_1$xs <- newdat_eps_1$xs + eps
-  X1 <- predict(modAR$gam, newdat_eps_1, type = 'lpmatrix')
+  X1 <- predict(modAR, newdat_eps_1, type = 'lpmatrix',
+                exclude=paste0("s(xs,",colnames(random_terms),")"))
   
   # finite difference approximation of first derivative
   # the design matrix
   Xp <- (X1 - X0) / eps
-  first_deriv <- Xp %*% coef(modAR$gam)
+  first_deriv <- Xp %*% coef(modAR)
   
   # get second derivative
   newdat_eps_2 <- newdat
   newdat_eps_2$xs <- newdat_eps_2$xs - eps
-  X_1 <- predict(modAR$gam, newdat_eps_2, type = 'lpmatrix')
+  X_1 <- predict(modAR, newdat_eps_2, type = 'lpmatrix',
+                 exclude=paste0("s(xs,",colnames(random_terms),")"))
   # design matrix for second derivative
   Xpp <- (X1 + X_1 - 2*X0)  / eps^2
   # second derivative
-  second_deriv <- Xpp %*% coef(modAR$gam)
+  second_deriv <- Xpp %*% coef(modAR)
   smooth_second_deriv <- predict(gamm(second_deriv~s(new_xs))$gam)
   
   # 1) does first derivative pass through 0? where?
@@ -151,7 +185,8 @@ find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NU
   if (plot) {
     par(mfrow=c(3,1))
     par(mar=c(2.1, 4.1, 0.1, 0.1))
-    plot(new_xs, predict(modAR$gam, newdata=newdat))
+    plot(new_xs, predict(modAR, newdata=newdat,
+                         exclude=paste0("s(xs,",colnames(random_terms),")")))
     lines(1:11, aggregate(ys ~ xs, FUN=mean)$ys, col="red")
     abline(v=out, col="red")
     plot(new_xs, first_deriv)
@@ -163,9 +198,9 @@ find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NU
 }
 
 # example for usage:
- #spe <- filter(price, speaker=="fop96-2b", following_voiceless==T)
- #xs <- spe$measurement_no; ys <- spe$f2; k=10; groups=spe$id; n=1000
- #find_inflection(xs, ys, k, groups, convex=T, plot=T)
+ spe <- filter(price, speaker=="fop96-2b", following_voiceless==T)
+ xs <- spe$measurement_no; ys <- spe$f2; k=10; groups=spe$id; n=1000
+ find_inflection(xs, ys, k, random_terms=spe[,c("following")], groups, convex=T, plot=T)
 ```
 
 Data import.
@@ -359,20 +394,22 @@ Automatically detecting inflection points for each smooth fitted to each combina
 
 ```{r}
 # set pb to no. of groups * 2
-#pb = progress_estimated(length(unique(price_vd$speaker)) * 2)
+pb = progress_estimated(length(unique(price_vd$speaker)) * 2)
 price_vd_infl <- price_vd %>%
   group_by(speaker) %>%
   summarise(dur_avg=mean(dur),
             f1_infl=find_inflection(measurement_no, 
                                       bark(f1),
                                       k=10,
+                                      random_terms=as.data.frame(previous,following),
                                       groups=id,
-                                      plot=F, convex=F),
+                                      plot=F, convex=F, .pb=pb),
             f2_infl=find_inflection(measurement_no, 
                                       bark(f2),
                                       k=10,
+                                      random_terms=as.data.frame(previous,following),
                                       groups=id,
-                                      plot=F, convex=T),
+                                      plot=F, convex=T, .pb=pb),
             yob=yob[1], sex=sex[1]) %>%
   ungroup()
 pb = progress_estimated(length(unique(mouth_vd$speaker)) * 2)
@@ -382,12 +419,14 @@ mouth_vd_infl <- mouth_vd %>%
             f1_infl=find_inflection(measurement_no, 
                                        bark(f1),
                                        k=10,
+                                       random_terms=as.data.frame(previous,following),
                                        groups=id,
                                        plot=F, convex=F,
                                        .pb=pb),
             f2_infl=find_inflection(measurement_no, 
                                       bark(f2),
                                       k=10,
+                                      random_terms=as.data.frame(previous,following),
                                       groups=id,
                                       plot=F, convex=F,
                                       .pb=pb),
