@@ -1,0 +1,13 @@
+name: NZ_dipthongs
+title:
+username:
+account: onze
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 2709312
+bundleId: 3565576
+url: https://onze.shinyapps.io/NZ_dipthongs/
+when: 1598573343.68694
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: app_old.R

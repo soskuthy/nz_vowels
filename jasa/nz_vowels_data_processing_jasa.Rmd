@@ -15,6 +15,9 @@ library(emuR)
 
 price_wide <- read_csv("../raw_data/price.csv")
 
+price_wide <- readRDS("raw_data_JB/price.rds")
+
+
 # removing some non-essential columns, renaming columns
 # positive select statement will help with generalisability to other data sets
 price_wide <- price_wide %>% 
@@ -37,25 +40,41 @@ price_wide <- price_wide %>%
 # now move to long format & filter out NA's
 
 price <- price_wide %>%
-  reshape(varying=list(paste0("time_", c(paste0("0.", 0:9), "1.0")),
-                       paste0("f1_time_", c(paste0("0.", 0:9), "1.0")),
-                       paste0("f2_time_", c(paste0("0.", 0:9), "1.0")),
-                       paste0("f3_time_", c(paste0("0.", 0:9), "1.0"))),
-          v.names=c("time", "f1", "f2", "f3"),
-          timevar="measurement_no",
-          direction="long") %>% # fuck you, gather()!
-  dplyr::select(-number) %>% 
-  mutate(id_str=paste0("price_", id)) %>%
+  pivot_longer(cols = time_0.0:f3_time_1.0, names_to = "F_variable", values_to = "F_value") %>%
+  mutate(measurement_no = as.numeric(str_sub(F_variable, -3, -1)),
+         F_variable = ifelse(str_sub(F_variable, 1, 2) == "ti", "time", str_sub(F_variable, 1, 2))) %>%
+  pivot_wider(names_from = F_variable, values_from = F_value) %>%
+  mutate(id = paste0(number, "_", speaker),
+         id_str=paste0("price_", id)) %>%
   group_by(id) %>%
   # also filtering entire vowels with too many NA's
-  filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>% 
+  filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>%
   ungroup() %>%
   arrange(id, measurement_no) %>%
-  mutate(id=id_str) %>% 
+  mutate(id=id_str) %>%
   dplyr::select(-`id_str`) %>%
   group_by(speaker) %>%
-  mutate(speaker_n=length(unique(id))) %>%
+  mutate(speaker_n=n_distinct(id)) %>%
   ungroup()
+  # reshape(varying=list(paste0("time_", c(paste0("0.", 0:9), "1.0")),
+  #                      paste0("f1_time_", c(paste0("0.", 0:9), "1.0")),
+  #                      paste0("f2_time_", c(paste0("0.", 0:9), "1.0")),
+  #                      paste0("f3_time_", c(paste0("0.", 0:9), "1.0"))),
+  #         v.names=c("time", "f1", "f2", "f3"),
+  #         timevar="measurement_no",
+  #         direction="long") %>% # fuck you, gather()!
+  # dplyr::select(-number) %>% 
+  # mutate(id_str=paste0("price_", id)) %>%
+  # group_by(id) %>%
+  # # also filtering entire vowels with too many NA's
+  # filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>% 
+  # ungroup() %>%
+  # arrange(id, measurement_no) %>%
+  # mutate(id=id_str) %>% 
+  # dplyr::select(-`id_str`) %>%
+  # group_by(speaker) %>%
+  # mutate(speaker_n=length(unique(id))) %>%
+  # ungroup()
 
 # creating a PDF for checking formant tracking by speaker
 if (FALSE) {
@@ -80,7 +99,7 @@ if (FALSE) {
 # all of this is based on PRICE (the assumption being that formant tracking errors result from
 # poor recording quality / idiosyncracies of a given speaker, and should therefore be similar
 # across all vowels)
-exclude_speakers <- c("Ada Aitcheson", "Anna Hayes", "Annie Hamilton", "Catherine King", "Christina Bisset", "Edith German", "Henry Swarbrick", "Hannah Cross", "Jessie Drinnan", "Jane Reid", "Marguerite Symons", "Annette Golding", "Elizabeth Arnott", "Jean Atkinson", "John Barron", "Ken Algie", "Mavis Jackson", "Nan Hay", "Sydney Farrell", "Rupert Pyle", "Ruth Greer", "Vera Hayward", "fyp09−6", "mon09−3", "mon97−19a", "mon96−2a", "mon99−1b", "mon99−13b", "mop02−5", "mop98−18", "myn97−6a", "myn97−9", "myp00−18a", "myp00−18a", "myp00−18a", "myp07−1a", "myp07−6", "myp94−17", "myp09−2", "myp94−8c", "myp98−12b","Betty Roberts","David Moore","Elizabeth Arnott","fon94−3","fop01−13","fop02−9","fop95−27","fyn94−12a","fyn94−26a","George Rivers","Joan Wicks","Kathleen Fountain","Lillian Aitken","Margaret Annan","Myra Ralston","Pat Toomey")
+exclude_speakers <- c("Ada Aitcheson", "Anna Hayes", "Annie Hamilton", "Catherine King", "Christina Bisset", "Edith German", "Henry Swarbrick", "Hannah Cross", "Jessie Drinnan", "Jane Reid", "Marguerite Symons", "Annette Golding", "Elizabeth Arnott", "Jean Atkinson", "John Barron", "Ken Algie", "Mavis Jackson", "Nan Hay", "Sydney Farrell", "Rupert Pyle", "Ruth Greer", "Vera Hayward", "fyp09−6", "mon09−3", "mon97−19a", "mon96−2a", "mon99−1b", "mon99−13b", "mop02−5", "mop98−18", "myn97−6a", "myn97−9", "myp00−18a", "myp00−18a", "myp00−18a", "myp07−1a", "myp07−6", "myp94−17", "myp09−2", "myp94−8c", "myp98−12b","Betty Roberts","David Moore","Elizabeth Arnott", "fon94−3", "fop01−13", "fop02−9", "fop95−27", "fyn94−12a", "fyn94−26a", "George Rivers", "Joan Wicks", "Kathleen Fountain", "Lillian Aitken", "Margaret Annan", "Myra Ralston", "Pat Toomey")
 
 # also excluding partial words and words that don't contain PRICE (there are a fair few!)
 price_filtered <- price %>%
@@ -153,6 +172,10 @@ price_filtered <- price_filtered %>%
 # save as RDS
 saveRDS(price_filtered, "../final_data/price_full_jasa.rds")
 
+price_filtered1 <- readRDS("../final_data/price_full_jasa.rds")
+
+anti_join(price_filtered %>% select(-id, -id_str, -number), price_filtered1 %>% select(-id))
+
 # creating averaged data (male AND female)
 price_filtered_avgs <- price_filtered %>%
   group_by(speaker, following_voiceless, measurement_no) %>%
@@ -165,6 +188,7 @@ price_filtered_avgs <- price_filtered %>%
 
 # save as RDS
 saveRDS(price_filtered_avgs, "../final_data/price_averaged_jasa.rds")
+
 ```
 
 ## MOUTH

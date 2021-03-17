@@ -1,0 +1,1260 @@
+---
+title: "Horizontal diphthong shift in New Zealand English (or some other title)"
+subtitle: "Supplementary materials: _Data processing_"
+author: "Márton Sóskuthy, Jen Hay & James Brand<br/><br/>Corresponding author: Márton Sóskuthy<br/>Email: marton.soskuthy@ubc.ca"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    collapsed: false
+    df_print: paged
+    code_folding: show
+---
+
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #95A044;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+```
+
+# Document outline
+
+**Purpose: Introduce the data and libraries used**
+
+This document provides the code used during the data processing stages of the Sóskuthy, Hay and Brand (2020) manuscript, submitted to JASA. It contains all the steps the authors carried out in order to produce the final data sets used in the analysis (see supplementary materials: Analysis file).
+
+### Data decription
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+I have copied and pasted some of this from the co-variation paper. One thing we should talk about is anonymisation and data sharing. For the co-variation paper we removed a lot of data during the processing, the pre-processed data was not shared. I think given the size of the data here, we could share the raw data (following the same anonymisation steps, so speaker becomes something like MU_0001, word becomes word_00001, other variables not used in the analysis are removed).
+
+I think the filtering steps work very well, so we do get a good balance between quantity and quality and they could be used by other researchers, so having both the raw and final data shows how much mess we get and how we address that mess.
+
+I added the default process with Praat settings from LaBB-CAT, not sure if you used this or a custom script, so they might need to be changed.
+</div>
+
+  - The raw data file being processed contains data from the ONZE corpus using LaBB-CAT ([Fromont & Hay, 2008](https://doi.org/10.3366/E1749503208000142))
+  
+  - The data were processed automatically with Praat and were force-aligned using the HTK toolkit
+  
+  - The ONZE corpus comprises 4 sub-corpora: _Mobile Unit_ (MU), _Intermediate Archive_ (IA), _Canterbury Corpus_ (CC). You can find out more on the ONZE corpus at [https://www.canterbury.ac.nz/nzilbb/research/onze/](https://www.canterbury.ac.nz/nzilbb/research/onze/)
+  
+  - All available speakers were queried and all available tokens containing PRICE and MOUTH vowel segments were extracted
+  
+  - The F1, F2 and F3 values were automatically extracted using Praat. These were taken at 11 time points during the vowel duration (0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0). The Praat formant settings were automatically set for females and males separately:
+      - max formant values: female = 5500, male = 5000
+      - maximum number of formants: 5 (for females and males)
+      - window length: 0.025 (for females and males)
+      - dynamic range: 50 (for females and males)
+      
+  - The resulting raw unprocessed datasets can be found in the `XX data` folder, the only processing these files have undergone is converting the original `.csv` file outputed from labb-cat to `.rds` format, in order to reduce the size of the files
+  
+  - We do not include the raw data file in the project repository as it contains sensitive information about the speakers that we do not wish to make publicly available. If you are interested in accessing or using the ONZE instance of labb-cat, please contact **nzilbb [at] canterbury [dot] ac [dot] nz**
+  
+  - The data files that this document produces (see the `XX data` folder) is made available in the project repository. This contains anonymised data and all the relevant variables that are required to reproduce the main analyses reported in the paper
+  
+  - We hope that this document provides a transparent and clear means to understand each of the steps taken to obtain the final data set
+
+### Libraries
+
+First, we will load in the relevant R libraries required to run the processing procedures and then load in the data itself.
+
+In order for the code in this document to work, the libraries are required to be installed and loaded into your R session. If you do not have any of the libraries installed, you can run `install.packages("LIBRARY NAME")` (change "LIBRARY NAME" to the required library name, e.g. `install.packages("tidyverse")`) which should resolve any warning messages you might get.
+
+```{r warning=FALSE, results='hide',message=FALSE}
+#load in the libraries
+library(tidyverse)
+library(phonTools)
+library(gganimate)
+library(mgcv)
+library(ggforce)
+library(parallel)
+library(emuR)
+library(cowplot)
+library(shiny)
+library(soundgen)
+
+#set a seed in case there are any stochastic processes
+set.seed(3.14159)
+
+#set start time
+cat(paste0("Start time:\n", format(Sys.time(), "%d %B %Y, %r")))
+start_time <- Sys.time()
+
+#check information about R session, this will give details of the R setup on the authors computer at the time of running. If any of the outputs are not reproduced as in the html file produced from this markdown document (see repository), there may be differences in the package versions or setup on your computer. You can update packages by running utils::update.packages()
+sessionInfo()
+
+```
+
+### Data processing steps
+
+As mentioned previously, we will be working with data for the NZE dipthongs PRICE and MOUTH. For each of the data sets we will:
+
+1. Load in the data and wrangle it so it is in a more usable format
+
+2. Apply various filtering steps to the data to remove outliers
+
+3. Code various additional variables of interest (e.g. )
+
+4. Calculate average F1, F2 and F3 based on whether the vowel is in following voiced/voiceless contexts
+
+5. Make an app to explore the trajectories for each speaker (with synthesised sounds!)
+
+The raw data can be found in the `raw_data` folder
+
+The final data can be found in the `final_data` folder
+
+
+# PRICE
+
+**Step 1**
+
+Data wrangling - this step takes the raw data and wrangles it into a more useable format
+
+```{r warning=FALSE}
+# price_wide1 <- read_csv("../raw_data/price.csv", na = c("n/a", "", "NA"))
+#
+# saveRDS(price_wide1, "raw_data_JB/price.rds")
+
+#load in the data
+price_wide <- readRDS("raw_data_JB/price.rds")
+
+# removing some non-essential columns, renaming columns
+# positive select statement will help with generalisability to other data sets
+price <- price_wide %>%
+  #select which variables to keep
+  dplyr::select(`Number`, `Speaker`, `Corpus`, `participant_gender`,
+                `participant_year_of_birth`, `Before Match`, `Text`, `After Match`,
+                `syllables/sec`, `Target phonemic transcription`, `Target lemma`, `Target words since last mention`,
+                `Target last wordform instance same speaker (sec. ago)`, `Target frequency (celex lemma)`, `Target freq (celex wordform)`,
+                `Target orthography`, `Match segments`, `Target segments`, `Target segments start`,
+                `Target segments end`, matches("(time|F[1-3]|error).*")) %>%
+  #reformat column names
+  select_all(tolower) %>%
+  select_all(function (x) {gsub("[ -]", "_", x)}) %>%
+  select_all(function (x) {gsub("/", "_per_", x)}) %>%
+  select_all(function (x) {gsub("[()]", "", x)}) %>%
+  select_all(function (x) {gsub("_sec._ago", "", x)}) %>%
+  select_all(function (x) {gsub("target_", "", x)}) %>%
+  rename(sex=participant_gender,
+         yob=participant_year_of_birth,
+         phon=phonemic_transcription,
+         celex_lemma=frequency_celex_lemma,
+         celex_wf=freq_celex_wordform,
+         wordform=orthography) %>%
+  #create a vowel duration variable
+  mutate(dur=segments_end - segments_start,
+         speaker = as.character(speaker)) %>%
+  #drop variables
+  dplyr::select(-`segments_start`, -`segments_end`)
+
+# now move to long format
+price <- price %>%
+  pivot_longer(cols = time_0.0:f3_time_1.0, names_to = "F_variable", values_to = "F_value") %>%
+  #get measurement number (1:11) for F1, F2 and F3
+  mutate(measurement_no = as.numeric(str_sub(F_variable, -3, -1)),
+         F_variable = ifelse(str_sub(F_variable, 1, 2) == "ti", "time", str_sub(F_variable, 1, 2))) %>%
+  pivot_wider(names_from = F_variable, values_from = F_value) %>%
+  #create a token id for each individual token
+  mutate(id = paste0(number, "_PRICE_", speaker),
+         id_str=paste0("price_", id)) %>%
+  arrange(id, measurement_no) %>%
+  #get token counts for each speaker
+  group_by(speaker) %>%
+  mutate(speaker_n=n_distinct(id)) %>%
+  ungroup() %>%
+  mutate(generation = ifelse(yob %in% c(1857:1880), "1857-1880",
+                             ifelse(yob %in% c(1881:1900), "1881-1900",
+                                    ifelse(yob %in% c(1901:1920), "1901-1920",
+                                           ifelse(yob %in% c(1921:1940), "1921-1940",
+                                                  ifelse(yob %in% c(1941:1960), "1941-1960",
+                                                         ifelse(yob %in% c(1961:1980), "1961-1980",
+                                                                ifelse(yob %in% c(1980:1990), "1980+","xxx")))))))) %>%
+  arrange(speaker, id, measurement_no)
+
+#make a data frame to store the number of distinct tokens and rows at each filtering step
+step = 1
+price_n_tokens <- data.frame(step =  step,
+                             description = as.character("full data no filtering"),
+                             n_tokens = price %>% select(id) %>% distinct() %>% nrow(),
+                             n_rows = price %>% nrow(),
+                             n_speakers = price %>% select(speaker) %>% n_distinct(),
+                             n_tokens_removed = 0,
+                             n_rows_removed = 0,
+                             n_speakers_removed = 0) %>%
+  mutate(description = as.character(description))
+
+price_n_tokens
+
+#make a plot showing all the trajectories for each speaker
+speakers <- unique(price$speaker)
+
+pdf("speaker_plots/checking_price_raw.pdf", onefile=T, width=7.3, height=10)
+  for (i in seq(1,length(speakers),70)) {
+    small <- filter(price, speaker %in% speakers[i:min(i+69,length(speakers))])
+    p <- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+      geom_line(col="red", alpha=0.2) +
+      geom_line(aes(y=f2), col="blue", alpha=0.2) +
+      scale_x_continuous(breaks = c(0.25, 0.50, 0.75), labels = c("25%", "50%", "75%")) +
+      scale_y_continuous(breaks = c(0, 1000, 2000, 3000), limits = c(0, 3680)) +
+      facet_wrap(~speaker, nrow=10, ncol=7) +
+      theme_bw() +
+      theme(legend.position = "none",
+              axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  }
+  dev.off()
+
+#make a function to update this information at each filtering step
+update_n_tokens_price <- function(step, data, description){
+
+  price_n_tokens <<- rbind(price_n_tokens,tibble(step =  step,
+           description = description,
+           n_tokens = data %>% select(id) %>% distinct() %>% nrow(),
+           n_rows = data %>% nrow(),
+           n_speakers = data %>% select(speaker) %>% n_distinct(),
+           n_tokens_removed = price_n_tokens[step - 1, "n_tokens"] - data %>% select(id) %>% distinct() %>% nrow(),
+           n_rows_removed = price_n_tokens[step - 1, "n_rows"] - data %>% nrow(),
+           n_speakers_removed =  price_n_tokens[step - 1, "n_speakers"] - data %>% select(speaker) %>% n_distinct()
+           ) %>%
+             as.data.frame()
+)
+}
+
+```
+
+
+**Step 2**
+
+Filter out tokens with too much missing data/Praat processing errors
+
+```{r}
+#filter out NAs
+price2 <- price %>%
+  group_by(id) %>%
+  # also filtering entire vowels with too many NA's
+  filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>%
+  ungroup() %>%
+  #get token counts
+  group_by(speaker) %>%
+  mutate(speaker_n=n_distinct(id)) %>%
+  ungroup()
+
+price_removed_step2 <- anti_join(price %>% select(-speaker_n), price2 %>% select(-speaker_n))
+
+update_n_tokens_price(step = 2, price2, "remove NA tokens")
+
+price_n_tokens
+
+```
+
+**Step 3**
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+This list had a bit of a problem with reading the "−" character, as the data contains speaker names with a "-" (for some reason these are read in differently, even though they look the same), I have modified the list below so the speaker names have the "-". I had a look at the final_data for PRICE and the speakers with a "-" were in that version, so from here on in the data may look slightly different.
+</div>
+
+Speaker exclusion:
+
+In step 1, we created a pdf file with all the trajectories for each of the speakers. As the data was not hand-coded there are likely some data points that we want to remove. This step does have some subjectivity to it.
+
+Based on the following criteria: exclude if...
+
+  - massive variation in f2 with no observable trend similar to individuals from same period
+  
+  - consistent formant switching errors (f2 -> f1)
+  
+  - very few tokens
+  
+All of this is based on the pdf from PRICE (the assumption being that formant tracking errors result from poor recording quality / idiosyncracies of a given speaker, and should therefore be similar
+across all vowels)
+
+The list of speakers below are the ones identified as being questionable. These were checked by multiple authors and were agreed to be sufficiently poor quality to remove the speaker from the data
+
+```{r}
+# speaker exclusion list
+exclude_speakers <- c("Ada Aitcheson", "Anna Hayes", "Annie Hamilton", "Catherine King", "Christina Bisset", "Edith German", "Henry Swarbrick", "Hannah Cross", "Jessie Drinnan", "Jane Reid", "Marguerite Symons", "Annette Golding", "Elizabeth Arnott", "Jean Atkinson", "John Barron", "Ken Algie", "Mavis Jackson", "Nan Hay", "Sydney Farrell", "Rupert Pyle", "Ruth Greer", "Vera Hayward", "fyp09-6", "mon09-3", "mon97-19a", "mon96-2a", "mon99-1b", "mon99-13b", "mop02-5", "mop98-18", "myn97-6a", "myn97-9", "myp00-18a", "myp00-18a", "myp00-18a", "myp07-1a", "myp07-6", "myp94-17", "myp09-2", "myp94-8c", "myp98-12b","Betty Roberts","David Moore","Elizabeth Arnott","fon94-3","fop01-13","fop02-9","fop95-27","fyn94-12a","fyn94-26c","George Rivers","Joan Wicks","Kathleen Fountain","Lillian Aitken","Margaret Annan","Myra Ralston","Pat Toomey")
+
+# also excluding partial words and words that don't contain PRICE (there are a fair few!)
+price3 <- price2 %>%
+  filter(!(speaker %in% exclude_speakers)
+         )
+
+update_n_tokens_price(step = 3, price3, "remove speakers with poor quality data")
+
+price_n_tokens
+
+price_removed_step3 <- anti_join(price2 %>% select(-speaker_n), price3 %>% select(-speaker_n))
+
+```
+
+**Step 4**
+
+Remove tokens with hesitations or where the transcription looks questionable (a few spot checks suggest that this is overlapping speech and picking up on the wrong word).
+
+We will also remove tokens that have a very short duration (< 0.03ms) and tokens that are from a word-list.
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+I added in the duration and word list steps here, tokens with NA values were from word lists so presumably should be removed?
+</div>
+
+```{r}
+price4 <- price3 %>%
+  filter(!grepl("~", wordform),
+         grepl("2", phon),
+         round(dur, 3) >= 0.03,
+         !is.na(syllables_per_sec))
+
+update_n_tokens_price(step = 4, price4, "labb-cat issues")
+
+price_removed_step4 <- anti_join(price3 %>% select(-speaker_n), price4 %>% select(-speaker_n))
+
+price_n_tokens
+
+```
+
+**Step 4a**
+
+Code for previous/following contexts based on voicing. No filtering here.
+
+```{r}
+# environments
+
+# function to find segments in wordform by specifying position relative to
+# target segment; 0=segment location, -1=preceding, +1=following
+find_context <- function (text, segment, where) {
+  locations <- as.vector(regexpr(segment, text))
+  lengths <- nchar(text)
+  context_locations <- locations + where
+  contexts <- str_sub(text, context_locations, context_locations)
+  contexts[context_locations <= 0] <- "none"
+  contexts[context_locations > lengths] <- "none"
+  return(contexts)
+}
+
+# add predictor coding for following voicing
+price4 <- price4 %>%
+  mutate(previous=find_context(phon, "2", -1),
+         following=find_context(phon, "2", 1),
+         following_voiceless=following %in% c("p","t","k","J","f","T","s","S","h"))
+
+```
+
+**Step 5**
+
+Fixing trajectories!
+
+We know that certain values are just unreasonable for f1 / f2 (depending on male / female), as a baseline let's use American English vowel data (`h95`, Hillenbrand et al. (1995)) to estimate reasonable / unreasonable f1 / f2 (from `phonTools` package, run `?h95` for more information)
+
+We are taking the upper (1%) and lower (99%) quantiles for female/male speakers in the h95 data for f1 and f2. Any values in our data that fall outside those values are removed.
+
+We also calculate for each speaker, at each measurement point:
+
+    - the lower quartile (25%)
+    
+    - the upper quartile (75%)
+    
+    - the interquartile range
+    
+We then remove values that are either smaller than the lower quartile - (1.5 \* inter-quartile range) or larger than the upper quartile + (1.5 \* inter-quartile range)
+
+
+```{r}
+data(h95)
+
+f_ranges <- h95 %>%
+  group_by(type) %>%
+  summarize(f1_lower=quantile(f1, 0.01),
+            f1_upper=quantile(f1, 0.99),
+            f2_lower=quantile(f2, 0.01),
+            f2_upper=quantile(f2, 0.99)) %>%
+  ungroup() %>%
+  mutate(sex=recode(type, m="M", w="F")) %>%
+  dplyr::select(-type)
+
+not_outlier <- function (x) {
+  x > (quantile(x, 0.25) - 1.5*IQR(x)) & x < (quantile(x, 0.75) + 1.5*IQR(x))
+}
+
+price5 <- price4 %>%
+  # filtering based on reasonable ranges / sex
+  inner_join(f_ranges, by="sex") %>%
+  filter(!is.na(f1) & !is.na(f2)) %>%
+  # marking clear f1/f2 outliers for each speaker as NAs
+  group_by(speaker, measurement_no) %>%
+  mutate(f1=ifelse(f1 > f1_lower & f1 < f1_upper & not_outlier(f1), f1, NA),
+         f2=ifelse(f2 > f2_lower & f2 < f2_upper & not_outlier(f2), f2, NA)) %>%
+  ungroup() %>%
+  group_by(id) %>%
+  # once again, removing trajectories with too many NAs
+  filter(sum(is.na(f1)) < 5 & sum(is.na(f2)) < 5) %>%
+  # filter(n(f1) < 7 & n(f2) < 5) %>%
+  ungroup() %>%
+  filter(!is.na(yob), !is.na(f1), !is.na(f2)) %>%
+  select(-number, -id_str)
+
+update_n_tokens_price(step = 5, price5, "trajectory fixing")
+
+price_n_tokens
+
+price_removed_step5 <- anti_join(price4 %>% select(-speaker_n), price5 %>% select(-speaker_n))
+
+```
+
+**Step 6**
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+I added in this step here. It looked like some tokens had big fluctuations in their trajectories (mainly for f2). This tries to filter out measurement points that change dramatically. The increase/decrease values are arbitrary and there could be a more speaker intrinsic way to get this (I had a look at the standard deviations), but it does alright.
+</div>
+
+Additional filtering of questionnable trajectory points. This is based on:
+
+  - Calculating the difference between the f1/f2 value at measurement point n and n - 1 (using the lag function), the same is calculated for the n and n + 1 differences (using the lead function)
+
+  - This gives us an idea if there is a dramatic increase or decrease in the f1/f2 values at any two adjacent measurements
+
+  - Based on these values, we can exclude any token that has a difference of: f1 > |400| and f2 > |700|
+
+  - As the onset and offset of the vowel are the points where there may be influence from preceding/following contexts (i.e. the forced alignment is capturing something that might not be the vowel, see the .pdf where it looks like some speakers have dramatic decreases in f2 at the start of the vowel), we also make a more conservative filter for these measurement points: f1 > |300| and f2 > |500|
+
+  - Once these individual measurement points have been filtered out, we then remove any full tokens (i.e. all measurement points), if there are fewer than 7 valid measurements for the token
+
+```{r}
+price6 <- price5 %>%
+  # left_join(., price5 %>%
+  #             group_by(id) %>%
+  #             summarise(mean_f1 = mean(f1),
+  #                       sd_f1 = sd(f1),
+  #                       mean_f2 = mean(f2),
+  #                       sd_f2 = sd(f2),
+  #                       range_f1 = max(f1) - min(f1),
+  #                       range_f2 = max(f2) - min(f2)) %>%
+  #             ungroup()) %>%
+  group_by(id) %>%
+  mutate(f1_diff_plus1 = ifelse(is.na(abs(lag(f1) - f1)), 0, abs(lag(f1) - f1)),
+         f2_diff_plus1 = ifelse(is.na(abs(lag(f2) - f2)), 0, abs(lag(f2) - f2)),
+         f1_diff_minus1 = ifelse(is.na(abs(lead(f1) - f1)), 0, abs(lead(f1) - f1)),
+         f2_diff_minus1 = ifelse(is.na(abs(lead(f2) - f2)), 0, abs(lead(f2) - f2))) %>%
+  ungroup() %>%
+  mutate(outlierF1 =
+           ifelse(measurement_no == 1 & f1_diff_minus1 > 300, 1,
+                  ifelse(measurement_no == 11 & f1_diff_plus1 > 300, 1,
+                         ifelse(f1_diff_plus1 > 400 & f1_diff_minus1 > 400, 1,
+                                ifelse(f1_diff_plus1 > 400, 1,
+                                       ifelse(f1_diff_minus1 > 400, 1, 0))))),
+         outlierF2 =
+           ifelse(measurement_no == 1 & f2_diff_minus1 > 500, 1,
+                  ifelse(measurement_no == 11 & f2_diff_plus1 > 500, 1,
+                         ifelse(f2_diff_plus1 > 700 & f2_diff_minus1 > 700, 1,
+                                ifelse(f2_diff_plus1 > 700, 1,
+                                       ifelse(f2_diff_minus1 > 700, 1, 0)))))
+    ) %>%
+  # group_by(id) %>%
+  # mutate(outlier2 = sum(outlier1, na.rm = TRUE))%>%
+  filter(!outlierF1 > 0,
+         !outlierF2 > 0) %>%
+  group_by(speaker, id) %>%
+  mutate(n_measurements = length(id)) %>%
+  ungroup() %>%
+  filter(n_measurements > 7)
+
+update_n_tokens_price(step = 6, price6, "additional trajectory fixing")
+
+price_n_tokens
+
+price_removed_step6 <- anti_join(price5 %>% select(-speaker_n), price6 %>% select(-speaker_n))
+
+```
+
+**create plots of all trajectories by speaker**
+
+This plot can be compared to the raw data plot to see how the processing has removed outliers and speakers
+
+```{r warning=FALSE}
+  # pdf("checking_price_unfiltered.pdf", onefile=T, width=7.3, height=10)
+  # speakers <- unique(price$speaker)
+  # for (i in seq(1,length(speakers),70)) {
+  #   small <- filter(price, speaker %in% speakers[i:min(i+69,length(speakers))])
+  #   p<- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+  #     facet_wrap(~speaker, nrow=10, ncol=7) +
+  #     geom_line(col="red", alpha=0.5) +
+  #     geom_line(aes(y=f2), col="blue", alpha=0.2)
+  #   print(p)
+  # }
+  # dev.off()
+  
+  pdf("speaker_plots/checking_price_final.pdf", onefile=T, width=7.3, height=10)
+  for (i in seq(1,length(speakers),70)) {
+    small <- filter(price, speaker %in% speakers[i:min(i+69,length(speakers))])
+    small1 <- filter(price6, speaker %in% speakers[i:min(i+69,length(speakers))])
+    p <- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+      geom_line(data = small1, col="red", alpha=0.2) +
+      geom_line(data = small1, aes(y=f2), col="blue", alpha=0.2) +
+      scale_x_continuous(breaks = c(0.25, 0.50, 0.75), labels = c("25%", "50%", "75%")) +
+      scale_y_continuous(breaks = c(0, 1000, 2000, 3000), limits = c(0, 3680)) +
+      facet_wrap(~speaker, nrow=10, ncol=7) +
+      theme_bw() +
+      theme(legend.position = "none",
+              axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  }
+  dev.off()
+
+```
+
+**save the data**
+
+We will save the data as well as calculate the average F1, F2 and F3 (converted to barks) for each speaker and measurement point based on whether the vowel context is following a voiced or voiceless sound. 
+
+```{r}
+# # save as RDS
+# saveRDS(price_filtered, "../final_data/price_full_jasa.rds")
+# 
+# price_filtered1 <- readRDS("~/Documents/GitHub/nz_vowels/final_data/price_full_jasa.rds")
+
+saveRDS(price6, "final_data_JB/price_full_jasa.rds")
+
+# creating averaged data (male AND female)
+price_filtered_avgs <- price6 %>%
+  group_by(speaker, yob, sex, following_voiceless, measurement_no) %>%
+  summarise(f1_avg=mean(bark(f1)),
+            f2_avg=mean(bark(f2)),
+            f3_avg=mean(bark(f3)),
+            dur_avg=mean(dur)) %>%
+  ungroup() %>%
+  # for GAMMs again...
+  mutate(AR_start=measurement_no==1)
+
+# save as RDS
+saveRDS(price_filtered_avgs, "final_data_JB/price_averaged_jasa.rds")
+
+```
+
+# MOUTH
+
+**Step 1**
+
+Data wrangling - this step takes the raw data and wrangles it into a more useable format
+
+```{r warning=FALSE}
+# mouth_wide1 <- read_csv("../raw_data/mouth.csv", na = c("n/a", "", "NA"))
+#
+# saveRDS(mouth_wide1, "raw_data_JB/mouth.rds")
+
+#load in the data
+mouth_wide <- readRDS("raw_data_JB/mouth.rds")
+
+# removing some non-essential columns, renaming columns
+# positive select statement will help with generalisability to other data sets
+mouth <- mouth_wide %>%
+  #select which variables to keep
+  dplyr::select(`Number`, `Speaker`, `Corpus`, `participant_gender`,
+                `participant_year_of_birth`, `Before Match`, `Text`, `After Match`,
+                `syllables/sec`, `Target phonemic transcription`, `Target lemma`, `Target words since last mention`,
+                `Target last wordform instance same speaker (sec. ago)`, `Target frequency (celex lemma)`, `Target freq (celex wordform)`,
+                `Target orthography`, `Match segments`, `Target segments`, `Target segments start`,
+                `Target segments end`, matches("(time|F[1-3]|error).*")) %>%
+  #reformat column names
+  select_all(tolower) %>%
+  select_all(function (x) {gsub("[ -]", "_", x)}) %>%
+  select_all(function (x) {gsub("/", "_per_", x)}) %>%
+  select_all(function (x) {gsub("[()]", "", x)}) %>%
+  select_all(function (x) {gsub("_sec._ago", "", x)}) %>%
+  select_all(function (x) {gsub("target_", "", x)}) %>%
+  rename(sex=participant_gender,
+         yob=participant_year_of_birth,
+         phon=phonemic_transcription,
+         celex_lemma=frequency_celex_lemma,
+         celex_wf=freq_celex_wordform,
+         wordform=orthography) %>%
+  #create a vowel duration variable
+  mutate(dur=segments_end - segments_start,
+         speaker = as.character(speaker)) %>%
+  #drop variables
+  dplyr::select(-`segments_start`, -`segments_end`)
+
+# now move to long format
+mouth <- mouth %>%
+  pivot_longer(cols = time_0.0:f3_time_1.0, names_to = "F_variable", values_to = "F_value") %>%
+  #get measurement number (1:11) for F1, F2 and F3
+  mutate(measurement_no = as.numeric(str_sub(F_variable, -3, -1)),
+         F_variable = ifelse(str_sub(F_variable, 1, 2) == "ti", "time", str_sub(F_variable, 1, 2))) %>%
+  pivot_wider(names_from = F_variable, values_from = F_value) %>%
+  #create a token id for each individual token
+  mutate(id = paste0(number, "_MOUTH_", speaker),
+         id_str=paste0("mouth_", id)) %>%
+  arrange(id, measurement_no) %>%
+  #get token counts for each speaker
+  group_by(speaker) %>%
+  mutate(speaker_n=n_distinct(id)) %>%
+  ungroup() %>%
+  mutate(generation = ifelse(yob %in% c(1857:1880), "1857-1880",
+                             ifelse(yob %in% c(1881:1900), "1881-1900",
+                                    ifelse(yob %in% c(1901:1920), "1901-1920",
+                                           ifelse(yob %in% c(1921:1940), "1921-1940",
+                                                  ifelse(yob %in% c(1941:1960), "1941-1960",
+                                                         ifelse(yob %in% c(1961:1980), "1961-1980",
+                                                                ifelse(yob %in% c(1980:1990), "1980+","xxx")))))))) %>%
+  arrange(speaker, id, measurement_no)
+
+#make a data frame to store the number of distinct tokens and rows at each filtering step
+step = 1
+mouth_n_tokens <- data.frame(step =  step,
+                             description = as.character("full data no filtering"),
+                             n_tokens = mouth %>% select(id) %>% distinct() %>% nrow(),
+                             n_rows = mouth %>% nrow(),
+                             n_speakers = mouth %>% select(speaker) %>% n_distinct(),
+                             n_tokens_removed = 0,
+                             n_rows_removed = 0,
+                             n_speakers_removed = 0) %>%
+  mutate(description = as.character(description))
+
+mouth_n_tokens
+
+speakers_mouth <- unique(mouth$speaker)
+
+#make a plot showing all the trajectories for each speaker
+pdf("speaker_plots/checking_mouth_raw.pdf", onefile=T, width=7.3, height=10)
+  for (i in seq(1,length(speakers_mouth),70)) {
+    small <- filter(mouth, speaker %in% speakers_mouth[i:min(i+69,length(speakers_mouth))])
+    p <- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+      geom_line(col="red", alpha=0.2) +
+      geom_line(aes(y=f2), col="blue", alpha=0.2) +
+      scale_x_continuous(breaks = c(0.25, 0.50, 0.75), labels = c("25%", "50%", "75%")) +
+      scale_y_continuous(breaks = c(0, 1000, 2000, 3000), limits = c(0, 3680)) +
+      facet_wrap(~speaker, nrow=10, ncol=7) +
+      theme_bw() +
+      theme(legend.position = "none",
+              axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  }
+  dev.off()
+
+#make a function to update this information at each filtering step
+update_n_tokens_mouth <- function(step, data, description){
+
+  mouth_n_tokens <<- rbind(mouth_n_tokens,tibble(step =  step,
+           description = description,
+           n_tokens = data %>% select(id) %>% distinct() %>% nrow(),
+           n_rows = data %>% nrow(),
+           n_speakers = data %>% select(speaker) %>% n_distinct(),
+           n_tokens_removed = mouth_n_tokens[step - 1, "n_tokens"] - data %>% select(id) %>% distinct() %>% nrow(),
+           n_rows_removed = mouth_n_tokens[step - 1, "n_rows"] - data %>% nrow(),
+           n_speakers_removed =  mouth_n_tokens[step - 1, "n_speakers"] - data %>% select(speaker) %>% n_distinct()
+           ) %>%
+             as.data.frame()
+)
+}
+
+```
+
+
+**Step 2**
+
+Filter out tokens with too much missing data/Praat processing errors
+
+```{r}
+#filter out NAs
+mouth2 <- mouth %>%
+  group_by(id) %>%
+  # also filtering entire vowels with too many NA's
+  filter(!(sum(is.na(time)) > 4 | sum(is.na(f1)) > 4 | sum(is.na(f2)) > 4)) %>%
+  ungroup() %>%
+  #get token counts
+  group_by(speaker) %>%
+  mutate(speaker_n=n_distinct(id)) %>%
+  ungroup()
+
+mouth_removed_step2 <- anti_join(mouth %>% select(-speaker_n), mouth2 %>% select(-speaker_n))
+
+update_n_tokens_mouth(step = 2, mouth2, "remove NA tokens")
+
+mouth_n_tokens
+
+```
+
+**Step 3**
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+This list had a bit of a problem with reading the "−" character, as the data contains speaker names with a "-" (for some reason these are read in differently, even though they look the same), I have modified the list below so the speaker names have the "-". I had a look at the final_data for PRICE and the speakers with a "-" were in that version, so from here on in the data may look slightly different.
+</div>
+
+Speaker exclusion:
+
+In step 1, we created a pdf file with all the trajectories for each of the speakers. As the data was not hand-coded there are likely some data points that we want to remove. This step does have some subjectivity to it.
+
+Based on the following criteria: exclude if...
+
+  - massive variation in f2 with no observable trend similar to individuals from same period
+  
+  - consistent formant switching errors (f2 -> f1)
+  
+  - very few tokens
+  
+All of this is based on the pdf from PRICE (the assumption being that formant tracking errors result from poor recording quality / idiosyncracies of a given speaker, and should therefore be similar
+across all vowels)
+
+The list of speakers below are the ones identified as being questionable. These were checked by multiple authors and were agreed to be sufficiently poor quality to remove the speaker from the data
+
+```{r}
+# speaker exclusion list
+exclude_speakers <- c("Ada Aitcheson", "Anna Hayes", "Annie Hamilton", "Catherine King", "Christina Bisset", "Edith German", "Henry Swarbrick", "Hannah Cross", "Jessie Drinnan", "Jane Reid", "Marguerite Symons", "Annette Golding", "Elizabeth Arnott", "Jean Atkinson", "John Barron", "Ken Algie", "Mavis Jackson", "Nan Hay", "Sydney Farrell", "Rupert Pyle", "Ruth Greer", "Vera Hayward", "fyp09-6", "mon09-3", "mon97-19a", "mon96-2a", "mon99-1b", "mon99-13b", "mop02-5", "mop98-18", "myn97-6a", "myn97-9", "myp00-18a", "myp00-18a", "myp00-18a", "myp07-1a", "myp07-6", "myp94-17", "myp09-2", "myp94-8c", "myp98-12b","Betty Roberts","David Moore","Elizabeth Arnott","fon94-3","fop01-13","fop02-9","fop95-27","fyn94-12a","fyn94-26c","George Rivers","Joan Wicks","Kathleen Fountain","Lillian Aitken","Margaret Annan","Myra Ralston","Pat Toomey")
+
+mouth3 <- mouth2 %>%
+  filter(!(speaker %in% exclude_speakers)
+         )
+
+update_n_tokens_mouth(step = 3, mouth3, "remove speakers with poor quality data")
+
+mouth_n_tokens
+
+mouth_removed_step3 <- anti_join(mouth2 %>% select(-speaker_n), mouth3 %>% select(-speaker_n))
+
+```
+
+**Step 4**
+
+Remove tokens with hesitations or where the transcription looks questionable (a few spot checks suggest that this is overlapping speech and picking up on the wrong word).
+
+We will also remove tokens that have a very short duration (< 0.03ms) and tokens that are from a word-list.
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+I added in the duration and word list steps here, tokens with NA values were from word lists so presumably should be removed?
+</div>
+
+```{r}
+mouth4 <- mouth3 %>%
+  filter(!grepl("~", wordform),
+         grepl("6", phon),
+         round(dur, 3) >= 0.03,
+         !is.na(syllables_per_sec))
+
+update_n_tokens_mouth(step = 4, mouth4, "labb-cat issues")
+
+mouth_removed_step4 <- anti_join(mouth3 %>% select(-speaker_n), mouth4 %>% select(-speaker_n))
+
+mouth_n_tokens
+
+```
+
+**Step 4a**
+
+Code for previous/following contexts based on voicing. No filtering here.
+
+```{r}
+# environments
+
+# function to find segments in wordform by specifying position relative to
+# target segment; 0=segment location, -1=preceding, +1=following
+find_context <- function (text, segment, where) {
+  locations <- as.vector(regexpr(segment, text))
+  lengths <- nchar(text)
+  context_locations <- locations + where
+  contexts <- str_sub(text, context_locations, context_locations)
+  contexts[context_locations <= 0] <- "none"
+  contexts[context_locations > lengths] <- "none"
+  return(contexts)
+}
+
+# add predictor coding for following voicing
+mouth4 <- mouth4 %>%
+  mutate(previous=find_context(phon, "6", -1),
+         following=find_context(phon, "6", 1),
+         following_voiceless=following %in% c("p","t","k","J","f","T","s","S","h"))
+
+```
+
+**Step 5**
+
+Fixing trajectories!
+
+We know that certain values are just unreasonable for f1 / f2 (depending on male / female), as a baseline let's use American English vowel data (`h95`, Hillenbrand et al. (1995)) to estimate reasonable / unreasonable f1 / f2 (from `phonTools` package, run `?h95` for more information)
+
+We are taking the upper (1%) and lower (99%) quantiles for female/male speakers in the h95 data for f1 and f2. Any values in our data that fall outside those values are removed.
+
+We also calculate for each speaker, at each measurement point:
+
+    - the lower quartile (25%)
+    
+    - the upper quartile (75%)
+    
+    - the interquartile range
+    
+We then remove values that are either smaller than the lower quartile - (1.5 \* inter-quartile range) or larger than the upper quartile + (1.5 \* inter-quartile range)
+
+
+```{r}
+data(h95)
+
+f_ranges <- h95 %>%
+  group_by(type) %>%
+  summarize(f1_lower=quantile(f1, 0.01),
+            f1_upper=quantile(f1, 0.99),
+            f2_lower=quantile(f2, 0.01),
+            f2_upper=quantile(f2, 0.99)) %>%
+  ungroup() %>%
+  mutate(sex=recode(type, m="M", w="F")) %>%
+  dplyr::select(-type)
+
+not_outlier <- function (x) {
+  x > (quantile(x, 0.25) - 1.5*IQR(x)) & x < (quantile(x, 0.75) + 1.5*IQR(x))
+}
+
+mouth5 <- mouth4 %>%
+  # filtering based on reasonable ranges / sex
+  inner_join(f_ranges, by="sex") %>%
+  filter(!is.na(f1) & !is.na(f2)) %>%
+  # marking clear f1/f2 outliers for each speaker as NAs
+  group_by(speaker, measurement_no) %>%
+  mutate(f1=ifelse(f1 > f1_lower & f1 < f1_upper & not_outlier(f1), f1, NA),
+         f2=ifelse(f2 > f2_lower & f2 < f2_upper & not_outlier(f2), f2, NA)) %>%
+  ungroup() %>%
+  group_by(id) %>%
+  # once again, removing trajectories with too many NAs
+  filter(sum(is.na(f1)) < 5 & sum(is.na(f2)) < 5) %>%
+  # filter(n(f1) < 7 & n(f2) < 5) %>%
+  ungroup() %>%
+  filter(!is.na(yob), !is.na(f1), !is.na(f2)) %>%
+  select(-number, -id_str)
+
+update_n_tokens_mouth(step = 5, mouth5, "trajectory fixing")
+
+mouth_n_tokens
+
+mouth_removed_step5 <- anti_join(mouth4 %>% select(-speaker_n), mouth5 %>% select(-speaker_n))
+
+```
+
+**Step 6**
+
+<div class="alert alert-info">
+NOTE TO MARCI:
+
+I added in this step here. It looked like some tokens had big fluctuations in their trajectories (mainly for f2). This tries to filter out measurement points that change dramatically. The increase/decrease values are arbitrary and there could be a more speaker intrinsic way to get this (I had a look at the standard deviations), but it does alright.
+</div>
+
+Additional filtering of questionnable trajectory points. This is based on:
+
+- Calculating the difference between the f1/f2 value at measurement point n and n - 1 (using the lag function), the same is calculated for the n and n + 1 differences (using the lead function)
+
+- This gives us an idea if there is a dramatic increase or decrease in the f1/f2 values at any two adjacent measurements
+
+- Based on these values, we can exclude any token that has a difference of: f1 > |400| and f2 > |700|
+
+- As the onset and offset of the vowel are the points where there may be influence from preceding/following contexts (i.e. the forced alignment is capturing something that might not be the vowel, see the .pdf where it looks like some speakers have dramatic decreases in f2 at the start of the vowel), we also make a more conservative filter for these measurement points: f1 > |300| and f2 > |500|
+
+- Once these individual measurement points have been filtered out, we then remove any full tokens (i.e. all measurement points), if there are fewer than 7 valid measurements for the token
+
+```{r}
+mouth6 <- mouth5 %>%
+  # left_join(., mouth5 %>%
+  #             group_by(id) %>%
+  #             summarise(mean_f1 = mean(f1),
+  #                       sd_f1 = sd(f1),
+  #                       mean_f2 = mean(f2),
+  #                       sd_f2 = sd(f2),
+  #                       range_f1 = max(f1) - min(f1),
+  #                       range_f2 = max(f2) - min(f2)) %>%
+  #             ungroup()) %>%
+  group_by(id) %>%
+  mutate(f1_diff_plus1 = ifelse(is.na(abs(lag(f1) - f1)), 0, abs(lag(f1) - f1)),
+         f2_diff_plus1 = ifelse(is.na(abs(lag(f2) - f2)), 0, abs(lag(f2) - f2)),
+         f1_diff_minus1 = ifelse(is.na(abs(lead(f1) - f1)), 0, abs(lead(f1) - f1)),
+         f2_diff_minus1 = ifelse(is.na(abs(lead(f2) - f2)), 0, abs(lead(f2) - f2))) %>%
+  ungroup() %>%
+  mutate(outlierF1 =
+           ifelse(measurement_no == 1 & f1_diff_minus1 > 300, 1,
+                  ifelse(measurement_no == 11 & f1_diff_plus1 > 300, 1,
+                         ifelse(f1_diff_plus1 > 400 & f1_diff_minus1 > 400, 1,
+                                ifelse(f1_diff_plus1 > 400, 1,
+                                       ifelse(f1_diff_minus1 > 400, 1, 0))))),
+         outlierF2 =
+           ifelse(measurement_no == 1 & f2_diff_minus1 > 500, 1,
+                  ifelse(measurement_no == 11 & f2_diff_plus1 > 500, 1,
+                         ifelse(f2_diff_plus1 > 700 & f2_diff_minus1 > 700, 1,
+                                ifelse(f2_diff_plus1 > 700, 1,
+                                       ifelse(f2_diff_minus1 > 700, 1, 0)))))
+    ) %>%
+  # group_by(id) %>%
+  # mutate(outlier2 = sum(outlier1, na.rm = TRUE))%>%
+  filter(!outlierF1 > 0,
+         !outlierF2 > 0) %>%
+  group_by(speaker, id) %>%
+  mutate(n_measurements = length(id)) %>%
+  ungroup() %>%
+  filter(n_measurements > 7)
+
+update_n_tokens_mouth(step = 6, mouth6, "additional trajectory fixing")
+
+mouth_n_tokens
+
+mouth_removed_step6 <- anti_join(mouth5 %>% select(-speaker_n), mouth6 %>% select(-speaker_n))
+
+```
+
+**create plots of all trajectories by speaker**
+
+This plot can be compared to the raw data plot to see how the processing has removed outliers and speakers
+
+```{r warning=FALSE}
+  # pdf("checking_mouth_unfiltered.pdf", onefile=T, width=7.3, height=10)
+  # speakers <- unique(mouth$speaker)
+  # for (i in seq(1,length(speakers),70)) {
+  #   small <- filter(mouth, speaker %in% speakers[i:min(i+69,length(speakers))])
+  #   p<- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+  #     facet_wrap(~speaker, nrow=10, ncol=7) +
+  #     geom_line(col="red", alpha=0.5) +
+  #     geom_line(aes(y=f2), col="blue", alpha=0.2)
+  #   print(p)
+  # }
+  # dev.off()
+  
+  pdf("speaker_plots/checking_mouth_final.pdf", onefile=T, width=7.3, height=10)
+  for (i in seq(1,length(speakers_mouth),70)) {
+    small <- filter(mouth, speaker %in% speakers_mouth[i:min(i+69,length(speakers_mouth))])
+    small1 <- filter(mouth6, speaker %in% speakers_mouth[i:min(i+69,length(speakers_mouth))])
+    p <- ggplot(small, aes(x=measurement_no, y=f1, group=id)) +
+      geom_line(data = small1, col="red", alpha=0.2) +
+      geom_line(data = small1, aes(y=f2), col="blue", alpha=0.2) +
+      scale_x_continuous(breaks = c(0.25, 0.50, 0.75), labels = c("25%", "50%", "75%")) +
+      scale_y_continuous(breaks = c(0, 1000, 2000, 3000), limits = c(0, 3680)) +
+      facet_wrap(~speaker, nrow=10, ncol=7) +
+      theme_bw() +
+      theme(legend.position = "none",
+              axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  }
+  dev.off()
+
+```
+
+We will save the data as well as calculate the average F1, F2 and F3 (converted to barks) for each speaker and measurement point based on whether the vowel context is following a voiced or voiceless sound. 
+
+```{r}
+# # save as RDS
+# saveRDS(mouth_filtered, "../final_data/mouth_full_jasa.rds")
+# 
+# mouth_filtered1 <- readRDS("~/Documents/GitHub/nz_vowels/final_data/mouth_full_jasa.rds")
+
+saveRDS(mouth6, "final_data_JB/mouth_full_jasa.rds")
+
+# creating averaged data (male AND female)
+mouth_filtered_avgs <- mouth6 %>%
+  group_by(speaker, yob, sex, following_voiceless, measurement_no) %>%
+  summarise(f1_avg=mean(bark(f1)),
+            f2_avg=mean(bark(f2)),
+            f3_avg=mean(bark(f3)),
+            dur_avg=mean(dur)) %>%
+  ungroup() %>%
+  # for GAMMs again...
+  mutate(AR_start=measurement_no==1)
+
+# save as RDS
+saveRDS(mouth_filtered_avgs, "final_data_JB/mouth_averaged_jasa.rds")
+
+```
+
+# Final data description
+
+Below are some insights into the speakers and tokens from the final dataset.
+
+All speakers in the PRICE data are in the MOUTH data. 
+
+```{r}
+#speaker demographics
+price_speakers <- price6 %>%
+  group_by(speaker) %>%
+  mutate(n_tokens_price = n_distinct(id)) %>%
+  ungroup() %>%
+  select(speaker, yob, sex, n_tokens_price) %>%
+  distinct()
+
+mouth_speakers <- mouth6 %>%
+  group_by(speaker) %>%
+  mutate(n_tokens_mouth = n_distinct(id)) %>%
+  ungroup() %>%
+  select(speaker, yob, sex, n_tokens_mouth) %>%
+  distinct()
+
+#check that both data sets contains the same speakers
+setdiff(price_speakers$speaker, mouth_speakers$speaker)
+setdiff(mouth_speakers$speaker, price_speakers$speaker)
+
+#plot the distribution of speakers by year of birth and gender
+left_join(price_speakers, mouth_speakers) %>%
+  ggplot(aes(x = yob, fill = sex, colour = sex)) +
+  geom_histogram(binwidth=1,
+                 alpha = 0.8, colour = NA) +
+  geom_rug(alpha = 0.2) +
+  scale_x_continuous(breaks = seq(1860, 1990, 15)) +
+  scale_fill_manual(values = c("black", "#7CAE00")) +
+  scale_color_manual(values = c("black", "#7CAE00")) +
+  geom_label(data = . %>% group_by(sex) %>% summarise(n = n()), aes(x = 1864, y = 20, label = paste0("N female = ", n[1], "\nN male = ", n[2], "\nN total = ", sum(n), "\nyob range: ", min(price_speakers$yob), " - ", max(price_speakers$yob))), hjust=0, inherit.aes = FALSE) +
+  theme_bw() +
+  theme(legend.position = "top")
+
+#get speaker and token n by generation
+setdiff(names(price6), names(mouth6))
+setdiff(names(mouth6), names(price6))
+
+price_mouth <- rbind(price6 %>% mutate(vowel = "PRICE"),
+                     mouth6 %>% mutate(vowel = "MOUTH"))
+
+price_mouth %>%
+  group_by(vowel, speaker) %>%
+  mutate(n_tokens1 = n_distinct(id)) %>%
+  ungroup() %>%
+  select(vowel, generation, speaker, id, n_tokens1) %>%
+  distinct() %>%
+  group_by(vowel, generation) %>%
+  summarise(n_speakers = n_distinct(speaker),
+            n_tokens = n_distinct(id),
+            mean_n_tokens = mean(n_tokens1))
+
+saveRDS(price_mouth, "final_data_JB/price_mouth_final.rds")
+
+#see who the speakers are with the most/least tokens
+#this explains why 1921-1940 has a high mean token count, with one speaker having over 3 times more PRICE tokens than the next highest speaker
+price_mouth %>%
+  select(vowel, generation, speaker, id) %>%
+  distinct() %>%
+  group_by(vowel, speaker, generation) %>%
+  summarise(n_tokens = n_distinct(id)) %>%
+  arrange(-n_tokens) %>%
+  head(10)
+
+#might consider removing the speaker with 3 tokens
+price_mouth %>%
+  select(vowel, generation, speaker, id) %>%
+  distinct() %>%
+  group_by(vowel, speaker, generation) %>%
+  summarise(n_tokens = n_distinct(id)) %>%
+  arrange(n_tokens) %>%
+  head(10)
+
+#data for shiny app so we can compare tokens that have been filtered out to those that were kept
+price_mouth_raw <- rbind(price %>% mutate(vowel = "PRICE"),
+                     mouth %>% mutate(vowel = "MOUTH"))
+
+price_mouth1 <- price_mouth %>%
+  select(speaker, yob, generation, sex, id, measurement_no, f1, f2, f3, vowel)
+
+price_mouth_raw1 <- price_mouth_raw %>%
+  select(speaker, yob, generation, sex, id, measurement_no, f1, f2, f3, vowel)
+
+price_mouth1_filtered <- setdiff(price_mouth_raw1, price_mouth1) %>%
+  mutate(filtered = "raw")
+
+price_mouth_all <- rbind(price_mouth1 %>%
+                           mutate(filtered = "final"), price_mouth1_filtered)
+
+saveRDS(price_mouth_all, "final_data_JB/price_mouth_raw.rds")
+
+```
+
+```{r}
+#set end time
+cat(paste0("End time:\n", format(Sys.time(), "%d %B %Y, %r")))
+end_time <- Sys.time()
+
+cat(paste0("\n---------------\nTotal time to compile:\n", as.numeric(end_time - start_time), " minutes\n---------------\n"))
+
+```
+
+
+
+<!-- # Shiny app -->
+
+<!-- ```{r cache=FALSE} -->
+<!-- ########## -->
+<!-- # User interface -->
+<!-- ########## -->
+
+<!-- diphthongs <- price_mouth -->
+
+<!-- ui <- fluidPage( -->
+
+<!--   tags$style(type="text/css", -->
+<!--              ".shiny-output-error { visibility: hidden; }", -->
+<!--              ".shiny-output-error:before { visibility: hidden; }" -->
+<!--   ), -->
+
+<!--   # Application title -->
+<!--   titlePanel("NZ dipthongs"), -->
+
+<!--   # Sidebar -->
+<!--   sidebarLayout( -->
+<!--     sidebarPanel( -->
+<!--       sliderInput("yob", -->
+<!--                   "Year of birth:", -->
+<!--                   min = min(diphthongs$yob), -->
+<!--                   max = max(diphthongs$yob), -->
+<!--                   value = c(min(diphthongs$yob), max(diphthongs$yob)), -->
+<!--                   sep = ""), -->
+
+<!--       uiOutput("gender"), -->
+<!--       uiOutput("speaker"), -->
+<!--       tags$head(tags$script(src = "message-handler.js")), -->
+<!--       fluidRow( -->
+<!--         actionButton("mouth_sound", "Play MOUTH"), -->
+<!--         actionButton("price_sound", "Play PRICE")) -->
+
+<!--     ), -->
+
+<!--     # plot -->
+<!--     mainPanel( -->
+<!--       plotOutput("distPlot") -->
+
+<!--     ) -->
+<!--   ) -->
+<!-- ) -->
+
+<!-- ########## -->
+<!-- # server -->
+<!-- ########## -->
+
+<!-- server <- function(input, output) { -->
+
+<!--   # gender selection -->
+<!--   output$gender <- renderUI({ -->
+<!--     df <- diphthongs %>% filter(yob %in% c(min(input$yob):max(input$yob))) -->
+<!--     checkboxGroupInput( -->
+<!--       'gender', 'Gender:', choices = list("Female" = "F", "Male" = "M"), inline = TRUE -->
+<!--     ) -->
+<!--   }) -->
+
+<!--   #speaker selection -->
+<!--   output$speaker <- renderUI({ -->
+<!--     df <- diphthongs %>% filter(yob %in% c(min(input$yob):max(input$yob)), -->
+<!--                                      sex %in% input$gender) -->
+
+<!--     selectInput( -->
+<!--       'speaker', 'Speaker:', choices = c(Choose='', unique(df$speaker)), selectize = TRUE -->
+<!--     ) -->
+<!--   }) -->
+
+<!--   #main plot -->
+<!--   output$distPlot <- -->
+
+<!--     renderPlot({ -->
+
+<!--       information <- diphthongs %>% -->
+<!--         filter(speaker %in% input$speaker) %>% -->
+<!--         select(speaker, yob, sex) %>% -->
+<!--         mutate(sex = ifelse(sex == "F", "Female", "Male")) %>% -->
+<!--         distinct() -->
+
+<!--       speaker_plot1 <- diphthongs %>% -->
+<!--         filter(speaker %in% input$speaker) %>% -->
+<!--         # mutate(f1 = f1, -->
+<!--         #        f2 = f2) %>% -->
+<!--         pivot_longer(f1:f2, names_to = "F_variable", values_to = "F_value") %>% -->
+<!--         ggplot(aes(x=measurement_no, y=F_value, colour=F_variable)) + -->
+<!--         geom_line(aes(group = paste0(F_variable, id)), alpha=0.1, size = 0.5) + -->
+<!--         # geom_line(aes(y=f2), col="blue", alpha=0.2) + -->
+<!--         geom_smooth(method = "gam") + -->
+<!--         scale_color_manual(values = c("red", "blue")) + -->
+<!--         scale_x_continuous(breaks = c(0.25, 0.50, 0.75), labels = c("25%", "50%", "75%")) + -->
+<!--         xlab("Measurement point\n(% vowel duration)") + -->
+<!--         ylab("Formant value (Hz)") + -->
+<!--         ggtitle(paste0("Speaker: ", input$speaker, "\nYear of birth: ", information$yob, "\nGender: ", information$sex)) + -->
+<!--         facet_grid(~Vowel) + -->
+<!--         theme_bw() + -->
+<!--         theme(legend.position = "none", -->
+<!--               strip.text = element_text(size = 18, face = "bold"), -->
+<!--               axis.text = element_text(size = 14), -->
+<!--               axis.text.x = element_text(angle = 45, hjust = 1), -->
+<!--               axis.title = element_text(size = 14)) -->
+
+<!--       #extract the smooth values from the plot so they can be synthesised -->
+<!--       test1 <<- ggplot_build(speaker_plot1)$data[[2]] -->
+
+<!--       speaker_plot1 -->
+
+<!--     }) -->
+
+<!--   #MOUTH sound -->
+<!--   observeEvent(input$mouth_sound, { -->
+
+<!--     if (input$speaker != '') { -->
+
+<!--     diphthongs_speakers <- diphthongs %>% -->
+<!--       select(speaker, sex) %>% -->
+<!--       distinct() %>% -->
+<!--       mutate(sex = ifelse(sex == "F", 0.5, -0.5)) -->
+
+<!--     female_male <- diphthongs_speakers[diphthongs_speakers$speaker %in% input$speaker, ] -->
+
+<!--     mouth_f1_values <- test1 %>% -->
+<!--       filter(PANEL == 1, -->
+<!--              group == 1) -->
+
+<!--     mouth_f2_values <- test1 %>% -->
+<!--       filter(PANEL == 1, -->
+<!--              group == 2) -->
+
+<!--     playme(soundgen(formants = list(mouth_f1_values$y, mouth_f2_values$y), maleFemale = female_male$sex)) -->
+
+<!--     insertUI(selector = "#mouth_sound", -->
+<!--              where = "afterEnd", -->
+<!--              ui = tags$audio(autoplay = TRUE, controls = NA, style="display:none;") -->
+<!--     ) -->
+<!--     } -->
+<!--   }) -->
+
+<!--   #PRICE sound -->
+<!--   observeEvent(input$price_sound, { -->
+
+<!--     if (input$speaker != '') { -->
+
+<!--     diphthongs_speakers <- diphthongs %>% -->
+<!--       select(speaker, sex) %>% -->
+<!--       distinct() %>% -->
+<!--       mutate(sex = ifelse(sex == "F", 0.5, -0.5)) -->
+
+<!--     female_male <- diphthongs_speakers[diphthongs_speakers$speaker %in% input$speaker, ] -->
+
+<!--     price_f1_values <- test1 %>% -->
+<!--       filter(PANEL == 2, -->
+<!--              group == 1) -->
+
+<!--     price_f2_values <- test1 %>% -->
+<!--       filter(PANEL == 2, -->
+<!--              group == 2) -->
+
+<!--     playme(soundgen(formants = list(price_f1_values$y, price_f2_values$y), maleFemale = female_male$sex)) -->
+
+<!--     insertUI(selector = "#price_sound", -->
+<!--              where = "afterEnd", -->
+<!--              ui = tags$audio(autoplay = TRUE, controls = NA, style="display:none;") -->
+<!--     ) -->
+
+<!--     } -->
+<!--   }) -->
+
+<!-- } -->
+
+<!-- # Run the application -->
+<!-- shinyApp(ui = ui, server = server) -->
+
+<!-- ``` -->
+
