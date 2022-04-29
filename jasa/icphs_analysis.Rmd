@@ -198,18 +198,25 @@ find_inflection <- function (xs, ys, k, groups, random_terms=NULL, convex=T, n=1
 }
 
 # example for usage:
- spe <- filter(price, speaker=="fop96-2b", following_voiceless==T)
- xs <- spe$measurement_no; ys <- spe$f2; k=10; groups=spe$id; n=1000
- find_inflection(xs, ys, k, random_terms=spe[,c("following")], groups, convex=T, plot=T)
+ #spe <- filter(price, speaker=="fop96-2b", following_voiceless==T)
+ #xs <- spe$measurement_no; ys <- spe$f2; k=10; groups=spe$id; n=1000
+ #find_inflection(xs, ys, k, random_terms=spe[,c("following")], groups, convex=T, plot=T)
 ```
 
 Data import.
 
 ```{r}
-price <- readRDS("../final_data/price_full.rds")
-price_avgs <- readRDS("../final_data/price_averaged.rds")
-mouth <- readRDS("../final_data/mouth_full.rds")
-mouth_avgs <- readRDS("../final_data/mouth_averaged.rds")
+price <- readRDS("final_data/price_full_jasa.rds")
+price_avgs <- readRDS("final_data/price_averaged_jasa.rds")
+mouth <- readRDS("final_data/mouth_full_jasa.rds")
+mouth_avgs <- readRDS("final_data/mouth_averaged_jasa.rds")
+
+# for compatibility, convert measurement number to 1-11
+price$measurement_no <- 1 + price$measurement_no*10
+price_avgs$measurement_no <- 1 + price_avgs$measurement_no*10
+mouth$measurement_no <- 1 + mouth$measurement_no*10
+mouth_avgs$measurement_no <- 1 + mouth_avgs$measurement_no*10
+
 
 # binding by-speaker avgs into single data set for price / mouth
 price_avgs$vowel <- "price" 
@@ -229,6 +236,7 @@ price_mouth_avgs_vd$dur_avg_log <- log(price_mouth_avgs_vd$dur_avg)
 # focus on pre-vd only for main data
 price_vd <- filter(price, !following_voiceless)
 mouth_vd <- filter(mouth, !following_voiceless)
+
 ```
 
 ## GAM modelling of per-speaker avg contours
@@ -365,6 +373,7 @@ newdat$formant <- unlist(lapply(as.character(newdat$vowel_sex_formant), function
 newdat$measurement_no <- (newdat$measurement_no - 1)*10
 
 
+
 # creating ggplot
 ggplot(newdat, aes(x=measurement_no, y=hz, group=interaction(formant, sex), col=sex)) +
   facet_grid(vowel~yob) +
@@ -401,13 +410,13 @@ price_vd_infl <- price_vd %>%
             f1_infl=find_inflection(measurement_no, 
                                       bark(f1),
                                       k=10,
-                                      random_terms=as.data.frame(previous,following),
+                                      random_terms=as.data.frame(cbind(previous,following)),
                                       groups=id,
                                       plot=F, convex=F, .pb=pb),
             f2_infl=find_inflection(measurement_no, 
                                       bark(f2),
                                       k=10,
-                                      random_terms=as.data.frame(previous,following),
+                                      random_terms=as.data.frame(cbind(previous,following)),
                                       groups=id,
                                       plot=F, convex=T, .pb=pb),
             yob=yob[1], sex=sex[1]) %>%

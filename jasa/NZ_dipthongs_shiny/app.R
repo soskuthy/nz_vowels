@@ -125,11 +125,17 @@ server <- function(input, output) {
     }
     
     plot1 <- data_speaker_plot()
-    
+
     female_male <- data_speaker() %>%
       select(speaker, sex) %>%
       distinct() %>%
-      mutate(sex = ifelse(sex == "F", 0.5, -0.5))
+      mutate(start_f0 = ifelse(sex == "F", 210, 130),
+             end_f0 = ifelse(sex == "F", 180, 110),
+             f3 = ifelse(sex == "F", 3080, 2800),
+             f4 = ifelse(sex == "F", 4070, 3700),
+             f5 = ifelse(sex == "F", 5060, 4600),
+             f6 = ifelse(sex == "F", 6050, 5500)
+             )
     
     mouth_f1_values <- test1 %>%
       filter(PANEL == 1,
@@ -139,7 +145,21 @@ server <- function(input, output) {
       filter(PANEL == 1,
              group == 2)
     
-    playme(soundgen(formants = list(mouth_f1_values$y, mouth_f2_values$y), maleFemale = female_male$sex))
+    playme(
+      soundgen(
+        formants = list(
+          mouth_f1_values$y, mouth_f2_values$y, 
+          female_male$f3, female_male$f4,
+          female_male$f5, female_male$f6
+        ),
+        pitch = list(
+          time=c(0,1), 
+          value=c(female_male$start_f0,female_male$end_f0)
+        ),
+        temperature=0
+      )
+    )
+    
     
     
   })

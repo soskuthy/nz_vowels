@@ -280,15 +280,17 @@ Based on the following criteria: exclude if...
 All of this is based on the pdf from PRICE (the assumption being that formant tracking errors result from poor recording quality / idiosyncracies of a given speaker, and should therefore be similar
 across all vowels)
 
-The list of speakers below are the ones identified as being questionable. These were checked by multiple authors and were agreed to be sufficiently poor quality to remove the speaker from the data
+The list of speakers below are the ones identified as being questionable. These were checked by multiple authors and were agreed to be sufficiently poor quality to remove the speaker from the data.
+
+We also remove instances of the word "like" (function words were otherwise filtered at the data extraction stage).
 
 ```{r}
 # speaker exclusion list
 exclude_speakers <- c("Ada Aitcheson", "Anna Hayes", "Annie Hamilton", "Catherine King", "Christina Bisset", "Edith German", "Henry Swarbrick", "Hannah Cross", "Jessie Drinnan", "Jane Reid", "Marguerite Symons", "Annette Golding", "Elizabeth Arnott", "Jean Atkinson", "John Barron", "Ken Algie", "Mavis Jackson", "Nan Hay", "Sydney Farrell", "Rupert Pyle", "Ruth Greer", "Vera Hayward", "fyp09-6", "mon09-3", "mon97-19a", "mon96-2a", "mon99-1b", "mon99-13b", "mop02-5", "mop98-18", "myn97-6a", "myn97-9", "myp00-18a", "myp00-18a", "myp00-18a", "myp07-1a", "myp07-6", "myp94-17", "myp09-2", "myp94-8c", "myp98-12b","Betty Roberts","David Moore","Elizabeth Arnott","fon94-3","fop01-13","fop02-9","fop95-27","fyn94-12a","fyn94-26c","George Rivers","Joan Wicks","Kathleen Fountain","Lillian Aitken","Margaret Annan","Myra Ralston","Pat Toomey")
 
-# also excluding partial words and words that don't contain PRICE (there are a fair few!)
 price3 <- price2 %>%
-  filter(!(speaker %in% exclude_speakers)
+  filter(!(speaker %in% exclude_speakers),
+         wordform!="like"
          )
 
 update_n_tokens_price(step = 3, price3, "remove speakers with poor quality data")
@@ -298,6 +300,10 @@ price_n_tokens
 price_removed_step3 <- anti_join(price2 %>% select(-speaker_n), price3 %>% select(-speaker_n))
 
 ```
+
+
+
+
 
 **Step 4**
 
@@ -527,7 +533,7 @@ We will save the data as well as calculate the average F1, F2 and F3 (converted 
 # 
 # price_filtered1 <- readRDS("~/Documents/GitHub/nz_vowels/final_data/price_full_jasa.rds")
 
-saveRDS(price6, "final_data_JB/price_full_jasa.rds")
+saveRDS(price6, "final_data/price_full_jasa.rds")
 
 # creating averaged data (male AND female)
 price_filtered_avgs <- price6 %>%
@@ -541,7 +547,7 @@ price_filtered_avgs <- price6 %>%
   mutate(AR_start=measurement_no==1)
 
 # save as RDS
-saveRDS(price_filtered_avgs, "final_data_JB/price_averaged_jasa.rds")
+saveRDS(price_filtered_avgs, "final_data/price_averaged_jasa.rds")
 
 ```
 
@@ -955,7 +961,7 @@ We will save the data as well as calculate the average F1, F2 and F3 (converted 
 # 
 # mouth_filtered1 <- readRDS("~/Documents/GitHub/nz_vowels/final_data/mouth_full_jasa.rds")
 
-saveRDS(mouth6, "final_data_JB/mouth_full_jasa.rds")
+saveRDS(mouth6, "final_data/mouth_full_jasa.rds")
 
 # creating averaged data (male AND female)
 mouth_filtered_avgs <- mouth6 %>%
@@ -969,7 +975,7 @@ mouth_filtered_avgs <- mouth6 %>%
   mutate(AR_start=measurement_no==1)
 
 # save as RDS
-saveRDS(mouth_filtered_avgs, "final_data_JB/mouth_averaged_jasa.rds")
+saveRDS(mouth_filtered_avgs, "final_data/mouth_averaged_jasa.rds")
 
 ```
 
@@ -1030,7 +1036,7 @@ price_mouth %>%
             n_tokens = n_distinct(id),
             mean_n_tokens = mean(n_tokens1))
 
-saveRDS(price_mouth, "final_data_JB/price_mouth_final.rds")
+saveRDS(price_mouth, "final_data/price_mouth_final.rds")
 
 #see who the speakers are with the most/least tokens
 #this explains why 1921-1940 has a high mean token count, with one speaker having over 3 times more PRICE tokens than the next highest speaker
@@ -1067,7 +1073,7 @@ price_mouth1_filtered <- setdiff(price_mouth_raw1, price_mouth1) %>%
 price_mouth_all <- rbind(price_mouth1 %>%
                            mutate(filtered = "final"), price_mouth1_filtered)
 
-saveRDS(price_mouth_all, "final_data_JB/price_mouth_raw.rds")
+saveRDS(price_mouth_all, "final_data/price_mouth_raw.rds")
 
 ```
 

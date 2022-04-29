@@ -1,0 +1,1496 @@
+---
+title: "JASA analysis of full models fitted to NZE diphthongs"
+author: "Márton Sóskuthy"
+date: "13/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Prep
+
+Loading libraries...
+
+```{r}
+library(tidyverse)
+library(phonTools)
+library(gganimate)
+library(mgcv)
+library(itsadug)
+library(ggforce)
+library(parallel)
+library(emuR)
+library(directlabels)
+library(fda)
+
+nz_vowels_theme <- 
+  theme(axis.title=element_text(size=16, face="bold"),
+        axis.text.y=element_text(size=14, colour="black"),
+        axis.text.x=element_text(size=14, colour="black"),
+        strip.text=element_text(size=14),
+        plot.title=element_text(size=16, face="bold"),
+        panel.grid=element_blank(),
+        legend.position = "top",
+        legend.title=element_text(size=16, face="bold"),
+        legend.text=element_text(size=16))
+```
+
+Defining custom functions. First, a function for synthesising vowels.
+
+```{r, include=F}
+to_formant_track <- function (fname, f1bark, f2bark, dur, 
+                              f3def=2800, f4def=3700, f5def=4600,
+                              f6def=5500, f0_max=130, f0_min=110,
+                              script_path=NULL,
+                              praat_path=NULL) {
+  f1 <- bark(f1bark, inv=T)
+  f2 <- bark(f2bark, inv=T)
+  f3 <- rep(f3def, length(f1))
+  f4 <- rep(f4def, length(f1))
+  f5 <- rep(f5def, length(f1))
+  f6 <- rep(f6def, length(f1))
+  locations <- seq(0,dur,length.out=length(f1))
+  out <- data.frame(f1=f1, f2=f2, f3=f3, f4=f4, 
+                    f5=f5, f6=f6, 
+                    locations=locations)
+  tempfname <- tempfile(fileext=".csv")
+  # assume that script lives in ../praat/synthesise.praat
+  if (is.null(script_path)) {
+    script_path <- "../praat/synthesise.praat"
+  }
+  # assume that praat lives in "/Applications/Praat.app/Contents/MacOS/Praat"
+  if (is.null(praat_path)) {
+    praat_path <- "/Applications/Praat.app/Contents/MacOS/Praat"
+  }
+  write_csv(out, tempfname)
+  system(paste0(praat_path, " --run ", script_path, ' "', tempfname, '" "', fname, '" ', f0_max, " ", f0_min))
+  unlink(tempfname)
+}
+```
+
+Second, diabolically complicated function for identifying points of maximum convexity / concavity in trajectories.
+
+```{r, include=F}
+find_inflection <- function (xs, ys, k, groups, convex=T, n=1000, plot=F, .pb=NULL) {
+  if ((!is.null(.pb)) && inherits(.pb, "Progress") && (.pb$i < .pb$n)) 
+    .pb$tick()$print()
+  d <- data.frame(xs, ys, groups)
+  d <- d[order(groups, xs),]
+  d$start <- d$xs == min(d$xs)
+  d$groups <- as.factor(d$groups)
+  if (length(unique(groups)) < 3) {
+    warning(paste0('too few trajectories (< 3), returning NA'))
+    return(NA)
+  }
+  if (k > length(unique(xs))) {
+    if (length(unique(xs)) < 9) {
+      warning(paste0('trajectories have too many missing points (more > 2), returning NA'))
+      return(NA)
+    }
+    k <- length(unique(xs))
+    warning(paste0('k reduced to ', k))
+  }
+  
+  # fit gamm with AR1 autoregressive error model
+  modAR <- tryCatch({
+    gamm(ys ~ s(xs, k=k, bs="cr"),
+              data=d, correlation=corAR1(form=~ xs | groups))
+    },
+    error=function (x) NULL
+  )
+  if (is.null(modAR)) {
+    warning("model could not be fit to trajectories")
+    return(NA)
+  }
+  
+  new_xs <- seq(min(d$xs), max(d$xs), length.out=n)
+  newdat <- data.frame(xs=new_xs,
+                       ys=0)
+  
+  # get first derivative of smooth
+  eps <- 1e-04
+  X0 <- predict(modAR$gam, newdat, type = 'lpmatrix')
+  newdat_eps_1 <- newdat
+  newdat_eps_1$xs <- newdat_eps_1$xs + eps
+  X1 <- predict(modAR$gam, newdat_eps_1, type = 'lpmatrix')
+  
+  # finite difference approximation of first derivative
+  # the design matrix
+  Xp <- (X1 - X0) / eps
+  first_deriv <- Xp %*% coef(modAR$gam)
+  
+  # get second derivative
+  newdat_eps_2 <- newdat
+  newdat_eps_2$xs <- newdat_eps_2$xs - eps
+  X_1 <- predict(modAR$gam, newdat_eps_2, type = 'lpmatrix')
+  # design matrix for second derivative
+  Xpp <- (X1 + X_1 - 2*X0)  / eps^2
+  # second derivative
+  second_deriv <- Xpp %*% coef(modAR$gam)
+  smooth_second_deriv <- predict(gamm(second_deriv~s(new_xs))$gam)
+  
+  # 1) does first derivative pass through 0? where?
+  
+  fd_shift_1 <- first_deriv[-length(first_deriv)]
+  fd_shift_2 <- first_deriv[-1]
+  xings <- fd_shift_1 * fd_shift_2 <= 0
+  can_return <- F
+  if (sum(xings) > 0) {
+    indices <- (1:length(xings))[xings]
+    d2s <- smooth_second_deriv[indices]
+    if (convex & any(d2s > 0)) {
+      out <- new_xs[indices[which.max(d2s)]]
+      can_return <- T
+    } else if (!convex & any(d2s < 0)) {
+      out <- new_xs[indices[which.min(d2s)]]
+      can_return <- T
+    }
+  } 
+  if (!can_return) {
+  
+  # 2) ok, didn't find anything, now return 
+  #    point of maximum convexity / concavity 
+  # (max / min of second derivative, respectively)
+  
+    if (convex) {
+      out <- new_xs[which.max(smooth_second_deriv)]
+    } else {
+      out <- new_xs[which.min(smooth_second_deriv)]
+    }
+  }
+  
+  if (plot) {
+    par(mfrow=c(3,1))
+    par(mar=c(2.1, 4.1, 0.1, 0.1))
+    plot(new_xs, predict(modAR$gam, newdata=newdat))
+    lines(1:11, aggregate(ys ~ xs, FUN=mean)$ys, col="red")
+    abline(v=out, col="red")
+    plot(new_xs, first_deriv)
+    plot(new_xs, smooth_second_deriv)
+    lines(new_xs, second_deriv, col="red")
+  }
+  
+  return(out)
+}
+
+# example for usage:
+ #spe <- filter(price, speaker=="fop96-2b", following_voiceless==T)
+ #xs <- spe$measurement_no; ys <- spe$f2; k=10; groups=spe$id; n=1000
+ #find_inflection(xs, ys, k, groups, convex=T, plot=T)
+```
+
+Data import.
+
+```{r}
+price <- readRDS("final_data/price_full_jasa.rds")
+mouth <- readRDS("final_data/mouth_full_jasa.rds")
+
+# data processing for price
+price$measurement_no <- 1 + price$measurement_no*10
+price$dur_log <- log(price$dur)
+price$following_voiceless_ord <- as.ordered(price$following_voiceless)
+contrasts(price$following_voiceless_ord) <- "contr.treatment"
+price$speaker_f <- as.factor(price$speaker)
+price$previous_f <- factor(price$previous)
+price$following_f <- factor(price$following)
+price$speaker_f <- factor(price$speaker)
+price$sex <- factor(price$sex)
+
+price <- price %>% 
+  group_by(id) %>%
+  mutate(measurement_no_min=min(measurement_no)) %>%
+  ungroup() %>%
+  mutate(AR_start=measurement_no==measurement_no_min)
+
+price_M <- filter(price, sex=="M")
+price_F <- filter(price, sex=="F")
+
+# data processing for mouth
+
+mouth$measurement_no <- 1 + mouth$measurement_no*10
+mouth$dur_log <- log(mouth$dur)
+mouth$following_voiceless_ord <- as.ordered(mouth$following_voiceless)
+contrasts(mouth$following_voiceless_ord) <- "contr.treatment"
+mouth$speaker_f <- as.factor(mouth$speaker)
+mouth$previous_f <- factor(mouth$previous)
+mouth$following_f <- factor(mouth$following)
+mouth$speaker_f <- factor(mouth$speaker)
+
+mouth$sex <- factor(mouth$sex)
+
+mouth <- mouth %>% 
+  group_by(id) %>%
+  mutate(measurement_no_min=min(measurement_no)) %>%
+  ungroup() %>%
+  mutate(AR_start=measurement_no==measurement_no_min)
+
+mouth_M <- filter(mouth, sex=="M")
+mouth_F <- filter(mouth, sex=="F")
+```
+
+### Creating video summary
+
+For voiced data first.
+
+Procedure: load models one by one, make predictions for relevant subgroup, save data frame. Bind all of them together at the end. Models should be removed after predictions are obtained, as they take up too much memory. Here's the order we'll follow:
+
+- price, female, f1
+- price, female, f2
+- price, male, f1
+- price, male, f2
+- mouth, female, f1
+- mouth, female, f2
+- mouth, male, f1
+- mouth, male, f2
+
+We'll set up a loop.
+
+```{r}
+all_preds <- list()
+vowels <- c("price", "mouth")
+sexes <- c("F", "M")
+sexes_long <- c("female", "male")
+names(sexes_long) <- sexes
+formants <- c("f1", "f2")
+voiced <- unique(price$following_voiceless_ord)[unique(price$following_voiceless_ord)==T]
+for (vowel in vowels) {
+  for (sex in sexes) {
+    for (formant in formants) {
+      modname <- paste0("models/", vowel, "_", sexes_long[sex], "_", formant, "_mod.rds")
+      mod <- readRDS(modname)
+      dat <- get(paste0(vowel, "_", sex))
+      newdat <- expand.grid(measurement_no=seq(1,11,length.out=100),
+                            yob=seq(1857,
+                                    1987,
+                                    1),
+                            dur_log=median(filter(dat, !following_voiceless)$dur_log),
+                            previous_f=dat$previous_f[1],
+                            following_f=dat$following_f[1],
+                            speaker_f=dat$speaker_f[1],
+                            following_voiceless_ord=voiced)
+      newdat[,formant] <- 0
+      preds <- predict(mod, newdata=newdat, 
+                       exclude=c("s(measurement_no,previous_f)",
+                                 "s(measurement_no,following_f)",
+                                 "s(measurement_no,speaker_f)",
+                                 "s(measurement_no,speaker_f):following_voiceless_ordTRUE"))
+      newdat[,formant] <- preds
+      colnames(newdat)[which(colnames(newdat)==formant)] <- "hz"
+      
+      newdat$vowel <- vowel
+      newdat$sex <- sex
+      newdat$formant <- formant
+      
+      all_preds[[modname]] <- newdat
+      rm(mod); rm(newdat); gc(); gc()
+    }
+  }
+}
+all_preds_full_vd <- bind_rows(all_preds)
+all_preds_full_vd$vowel <- ifelse(all_preds_full_vd$vowel=='price', "PRICE", "MOUTH")
+all_preds_full_vd$sex <- ifelse(all_preds_full_vd$sex=='M', "male", "female")
+all_preds_full_vd$measurement_no <- (all_preds_full_vd$measurement_no - 1)*10
+```
+
+```{r}
+for (v in unique(all_preds_full_vd$vowel)) {
+  for (s in unique(all_preds_full_vd$sex)) {
+    # number of frames = number of years
+    frame_no <- length(unique(all_preds_full_vd$yob))
+    fps <- 10
+    
+    # dummy data set for highlighting in ggplot
+    dd <- unique(dplyr::select(all_preds_full_vd, vowel, sex))
+    dd$colour <- ifelse(dd$vowel==v & dd$sex==s, "red", "x")
+    
+    # creating animated ggplot with one of the panels highlighted
+    p <- ggplot(all_preds_full_vd, aes(x=measurement_no, y=hz, group=formant)) +
+      geom_rect(data = dd, aes(fill = colour, x=NULL, y=NULL, group=NULL), xmin = -Inf,xmax = Inf,
+        ymin = -Inf,ymax = Inf,alpha = 0.1) +
+      scale_fill_manual(values=c("red","white")) +
+      facet_grid(sex~vowel) +
+      geom_line(lwd=2) +
+      xlab("measurement point (% vowel duration)") +
+      ylab("frequency (Bark)") +
+      theme_bw() +
+      theme(axis.title=element_text(size=18, face="bold"),
+            axis.text=element_text(size=16),
+            strip.text=element_text(size=16),
+            plot.title=element_text(size=18, face="bold"),
+            panel.grid=element_blank(),
+            legend.position = "none") +
+      transition_time(yob) +
+      ease_aes('linear') +
+      labs(title = 'Year of birth: {frame_time}')
+    animate(p, nframes=frame_no, fps=fps)
+    
+    # generating sound
+    
+    anim_dur <- frame_no/fps
+    audio_samples <- 10
+    audio_dur <- 0.25
+    edge_window <- 0.2
+    pause_dur <- (anim_dur - 2*edge_window - audio_samples*audio_dur) / (audio_samples-1)
+
+    yob_min <- min(all_preds_full_vd$yob)
+    yob_max <- max(all_preds_full_vd$yob)
+    yob_range <- yob_max - yob_min
+    synthesise_at_yobs <- round(yob_min + yob_range*(seq(edge_window, edge_window + (audio_samples-1)*(audio_dur + pause_dur), audio_dur + pause_dur)/anim_dur))
+
+    dirname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/"
+    unlink(paste0(dirname, "*.wav"))
+    vid.dirname <- "videos/"
+    outname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/temp_continuum.wav"
+    for (i in 1:length(synthesise_at_yobs)) {
+      at_yob <- synthesise_at_yobs[i]
+      f1bark <- filter(all_preds_full_vd, yob==at_yob, sex==s, vowel==v, formant=="f1")$hz
+      f2bark <- filter(all_preds_full_vd, yob==at_yob, sex==s, vowel==v, formant=="f2")$hz
+      if (s=="female") {
+        to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur, f3=3080, f4=4070, f5=5060, f6=6050, f0_max=210, f0_min=180)
+      } else {
+        to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur)
+      }
+    }
+    
+    system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "../praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
+    
+    animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, v, "_", s, "_jasa_vid.mp4")))
+  }
+}
+```
+
+And now voiceless.
+
+```{r}
+all_preds <- list()
+vowels <- c("price", "mouth")
+sexes <- c("F", "M")
+sexes_long <- c("female", "male")
+names(sexes_long) <- sexes
+formants <- c("f1", "f2")
+voiceless <- unique(price$following_voiceless_ord)[unique(price$following_voiceless_ord)==F]
+for (vowel in vowels) {
+  for (sex in sexes) {
+    for (formant in formants) {
+      modname <- paste0("models/", vowel, "_", sexes_long[sex], "_", formant, "_mod.rds")
+      mod <- readRDS(modname)
+      dat <- get(paste0(vowel, "_", sex))
+      newdat <- expand.grid(measurement_no=seq(1,11,length.out=100),
+                            yob=seq(1857,
+                                    1987,
+                                    1),
+                            dur_log=median(filter(dat, !following_voiceless)$dur_log),
+                            previous_f=dat$previous_f[1],
+                            following_f=dat$following_f[1],
+                            speaker_f=dat$speaker_f[1],
+                            following_voiceless_ord=voiceless)
+      newdat[,formant] <- 0
+      preds <- predict(mod, newdata=newdat, 
+                       exclude=c("s(measurement_no,previous_f)",
+                                 "s(measurement_no,following_f)",
+                                 "s(measurement_no,speaker_f)",
+                                 "s(measurement_no,speaker_f):following_voiceless_ordTRUE"))
+      newdat[,formant] <- preds
+      colnames(newdat)[which(colnames(newdat)==formant)] <- "hz"
+      
+      newdat$vowel <- vowel
+      newdat$sex <- sex
+      newdat$formant <- formant
+      
+      all_preds[[modname]] <- newdat
+      rm(mod); rm(newdat); gc(); gc()
+    }
+  }
+}
+all_preds_full_vl <- bind_rows(all_preds)
+all_preds_full_vl$vowel <- ifelse(all_preds_full_vl$vowel=='price', "PRICE", "MOUTH")
+all_preds_full_vl$sex <- ifelse(all_preds_full_vl$sex=='M', "male", "female")
+all_preds_full_vl$measurement_no <- (all_preds_full_vl$measurement_no - 1)*10
+```
+
+```{r}
+for (v in unique(all_preds_full_vl$vowel)) {
+  for (s in unique(all_preds_full_vl$sex)) {
+    # number of frames = number of years
+    frame_no <- length(unique(all_preds_full_vl$yob))
+    fps <- 10
+    
+    # dummy data set for highlighting in ggplot
+    dd <- unique(dplyr::select(all_preds_full_vl, vowel, sex))
+    dd$colour <- ifelse(dd$vowel==v & dd$sex==s, "red", "x")
+    
+    # creating animated ggplot with one of the panels highlighted
+    p <- ggplot(all_preds_full_vl, aes(x=measurement_no, y=hz, group=formant)) +
+      geom_rect(data = dd, aes(fill = colour, x=NULL, y=NULL, group=NULL), xmin = -Inf,xmax = Inf,
+        ymin = -Inf,ymax = Inf,alpha = 0.1) +
+      scale_fill_manual(values=c("red","white")) +
+      facet_grid(sex~vowel) +
+      geom_line(lwd=2) +
+      xlab("measurement point (% vowel duration)") +
+      ylab("frequency (Bark)") +
+      theme_bw() +
+      theme(axis.title=element_text(size=18, face="bold"),
+            axis.text=element_text(size=16),
+            strip.text=element_text(size=16),
+            plot.title=element_text(size=18, face="bold"),
+            panel.grid=element_blank(),
+            legend.position = "none") +
+      transition_time(yob) +
+      ease_aes('linear') +
+      labs(title = 'Year of birth: {frame_time}')
+    animate(p, nframes=frame_no, fps=fps)
+    
+    # generating sound
+    
+    anim_dur <- frame_no/fps
+    audio_samples <- 10
+    audio_dur <- 0.25
+    edge_window <- 0.2
+    pause_dur <- (anim_dur - 2*edge_window - audio_samples*audio_dur) / (audio_samples-1)
+
+    yob_min <- min(all_preds_full_vl$yob)
+    yob_max <- max(all_preds_full_vl$yob)
+    yob_range <- yob_max - yob_min
+    synthesise_at_yobs <- round(yob_min + yob_range*(seq(edge_window, edge_window + (audio_samples-1)*(audio_dur + pause_dur), audio_dur + pause_dur)/anim_dur))
+
+    dirname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/"
+    unlink(paste0(dirname, "*.wav"))
+    vid.dirname <- "videos/"
+    outname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/temp_continuum.wav"
+    for (i in 1:length(synthesise_at_yobs)) {
+      at_yob <- synthesise_at_yobs[i]
+      f1bark <- filter(all_preds_full_vl, yob==at_yob, sex==s, vowel==v, formant=="f1")$hz
+      f2bark <- filter(all_preds_full_vl, yob==at_yob, sex==s, vowel==v, formant=="f2")$hz
+      if (s=="female") {
+        to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur, f3=3080, f4=4070, f5=5060, f6=6050, f0_max=210, f0_min=180)
+      } else {
+        to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur)
+      }
+    }
+    
+    system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "../praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
+    
+    animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, v, "_", s, "_jasa_voiceless_vid.mp4")))
+  }
+}
+```
+
+Both voiced / voiceless in same video.
+
+```{r}
+all_preds_full <- bind_rows(all_preds_full_vl, all_preds_full_vd)
+
+# number of frames = number of years
+frame_no <- length(unique(all_preds_full_vl$yob))
+fps <- 10
+
+# creating animated ggplot with one of the panels highlighted
+p <- ggplot(all_preds_full, 
+            aes(x=measurement_no, y=hz, group=formant, col=following_voiceless_ord)
+            ) +
+  facet_grid(sex~vowel) +
+  geom_line(aes(group=interaction(following_voiceless_ord, formant)), lwd=2) +
+  xlab("measurement point (% vowel duration)") +
+  ylab("frequency (Bark)") +
+  scale_colour_manual(values=c("deepskyblue4","firebrick3")) +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text=element_text(size=16),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        legend.position = "none") +
+  transition_time(yob) +
+  ease_aes('linear') +
+  labs(title = 'Year of birth: {frame_time}')
+animate(p, nframes=frame_no, fps=fps)
+
+# generating sound
+
+anim_dur <- frame_no/fps
+audio_samples <- 10
+audio_dur <- 0.25
+edge_window <- 0.2
+pause_dur <- (anim_dur - 2*edge_window - audio_samples*audio_dur) / (audio_samples-1)
+
+yob_min <- min(all_preds_full_vl$yob)
+yob_max <- max(all_preds_full_vl$yob)
+yob_range <- yob_max - yob_min
+synthesise_at_yobs <- round(yob_min + yob_range*(seq(edge_window, edge_window + (audio_samples-1)*(audio_dur + pause_dur), audio_dur + pause_dur)/anim_dur))
+
+dirname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/"
+unlink(paste0(dirname, "*.wav"))
+vid.dirname <- "videos/"
+outname <- "/Users/soskuthy/Documents/Research/current/2018/nz_vowels/sounds/temp/temp_continuum.wav"
+for (i in 1:length(synthesise_at_yobs)) {
+  at_yob <- synthesise_at_yobs[i]
+  f1bark <- filter(all_preds_full_vl, yob==at_yob, sex=='female', vowel=='PRICE', formant=="f1")$hz
+  f2bark <- filter(all_preds_full_vl, yob==at_yob, sex=='female', vowel=='PRICE', formant=="f2")$hz
+  #if (s=="female") {
+    to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur, f3=3080, f4=4070, f5=5060, f6=6050, f0_max=210, f0_min=180)
+  #} else {
+  #  to_formant_track(paste0(dirname, sprintf("temp%.3d.wav", i)), f1bark, f2bark, audio_dur)
+  #}
+}
+
+system(paste0("/Applications/Praat.app/Contents/MacOS/Praat --run ", "../praat/concatenate.praat ", '"', dirname, '" "', outname, '" ', edge_window, ' ', pause_dur))
+
+animate(p, nframes=frame_no, fps=fps, renderer=av_renderer(audio=outname, file=paste0(vid.dirname, "_jasa_all_vid.mp4")))
+```
+
+### A summary plot
+
+```{r}
+all_preds_full <- bind_rows(all_preds_full_vl, all_preds_full_vd)
+all_preds_plot <- filter(all_preds_full, yob %in% c(1860,1900,1940,1980))
+
+# creating ggplot
+ggplot(all_preds_plot, 
+       aes(x=measurement_no, 
+           y=hz, 
+           group=interaction(formant, sex, following_voiceless_ord), 
+           col=sex,
+           lty=following_voiceless_ord)) +
+  facet_grid(vowel~yob) +
+  geom_textline(
+    data=filter(
+      all_preds_plot,
+      following_voiceless_ord==F &
+      (sex=="male" &
+       formant=="f2")), 
+    aes(label=sex),
+    hjust=0.2,
+    vjust=1.3,
+    size=4, fontface="bold",
+    linewidth=1,
+    show.legend=F) +
+  geom_textline(
+    data=filter(
+      all_preds_plot,
+      following_voiceless_ord==F &
+      (sex=="female" &
+       formant=="f1")), 
+    aes(label=sex),
+    hjust=0.7,
+    vjust=-0.4,
+    size=4, fontface="bold",
+    linewidth=1,
+    show.legend=F) +
+  geom_line(data=filter(
+    all_preds_plot,
+    following_voiceless_ord==T |
+    (following_voiceless_ord==F & (
+      sex=="female" & formant=="f2" |
+      sex=="male" & formant=="f1"
+      ))), 
+    lwd=1) +
+  scale_color_manual(values=c("darkorange","purple2"), guide="none") +
+  scale_x_continuous(breaks=seq(0,100,25),
+                     labels=c("", "25%", "50%", "75%", "")) +
+  scale_linetype_discrete(name="Followed by voiceless segment?", 
+                        labels=c("No","Yes")) +
+  xlab("measurement point (% vowel duration)") +
+  ylab("frequency (Bark)") +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text.y=element_text(size=16),
+        axis.text.x=element_text(size=16, hjust=1, angle=25),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        legend.position = "bottom",
+        legend.title=element_text(size=16, face="bold"),
+        legend.text=element_text(size=16))
+ggsave("graphs/static_movie.pdf", width=9, height=5)
+
+```
+
+## Inflection point analysis
+
+Automatically detecting inflection points for each smooth fitted to each combination of speaker / vowel / formant / voicing.
+
+```{r}
+# set pb to no. of groups * 2
+pb = progress_estimated(length(unique(price$speaker)) * 4)
+price_infl <- price %>%
+  group_by(speaker, following_voiceless) %>%
+  summarise(dur_avg=mean(dur),
+            f1_infl=find_inflection(measurement_no, 
+                                      bark(f1),
+                                      k=10,
+                                      groups=id,
+                                      plot=F, convex=F,
+                                    .pb=pb),
+            f2_infl=find_inflection(measurement_no, 
+                                      bark(f2),
+                                      k=10,
+                                      groups=id,
+                                      plot=F, convex=T,
+                                    .pb=pb),
+            yob=yob[1], sex=sex[1]) %>%
+  ungroup()
+pb = progress_estimated(length(unique(mouth$speaker)) * 2)
+mouth_infl <- mouth %>%
+  group_by(speaker, following_voiceless) %>%
+  summarise(dur_avg=mean(dur),
+            f1_infl=find_inflection(measurement_no, 
+                                       bark(f1),
+                                       k=10,
+                                       groups=id,
+                                       plot=F, convex=F,
+                                       .pb=pb),
+            f2_infl=find_inflection(measurement_no, 
+                                      bark(f2),
+                                      k=10,
+                                      groups=id,
+                                      plot=F, convex=F,
+                                      .pb=pb),
+            yob=yob[1], sex=sex[1]) %>%
+  ungroup()
+
+# setting up for single gam analysis
+mouth_infl <- mouth_infl %>%
+  mutate(vowel="mouth") #%>%
+  #rename(f1_infl="f1_concave",
+  #       f2_infl="f2_concave")
+price_infl <- price_infl %>%
+  mutate(vowel="price") #%>%
+  #rename(f1_infl="f1_concave",
+  #       f2_infl="f2_convex")
+pm_infl <- rbind(mouth_infl, price_infl) %>%
+  gather(key="formant", value="inflection_point", c("f1_infl", "f2_infl"))
+pm_infl$vowel_sex_formant_vl <- interaction(pm_infl$vowel, pm_infl$sex, pm_infl$formant, pm_infl$following_voiceless)
+pm_infl$vowel_formant <- interaction(pm_infl$vowel, pm_infl$formant)
+pm_infl$dur_avg_log <- log(pm_infl$dur_avg)
+pm_infl$speaker <- as.factor(pm_infl$speaker)
+pm_infl$following_voiceless_f <- as.factor(pm_infl$following_voiceless)
+pm_infl$following_voiceless_l <- as.logical(pm_infl$following_voiceless)
+pm_infl$formant <- as.factor(pm_infl$formant)
+pm_infl$inflection_point <- (pm_infl$inflection_point-1)/10
+#pm_infl$inflection_point_mod <- 0.01+(pm_infl$inflection_point*0.98)
+#pm_infl$inflection_point <- (pm_infl$inflection_point*10)+1
+
+saveRDS(pm_infl, "final_data/price_mouth_infl.rds")
+```
+
+And now for some GAM modelling!
+
+```{r}
+# loading & filtering data
+pm_infl <- readRDS("final_data/price_mouth_infl.rds") %>%
+  group_by(speaker) %>%
+  mutate(inflection_point=
+           ifelse(
+             inflection_point %in% c(0,1),
+             NA,
+             inflection_point
+           )
+  ) %>%
+  ungroup() %>%
+  mutate(decade=round(yob, -1))
+
+# rolling outlier window with n nearest neighbours
+nn=100 # that's actually 100 neighbours, really, because each speaker is duplicated due to the following voiceless measurements
+start_yob=min(pm_infl$yob)
+end_yob=max(pm_infl$yob)
+centres <- seq(start_yob, end_yob, 1)
+
+pm_infl$ip_upper <- NA
+pm_infl$ip_lower <- NA
+for (v in unique(pm_infl$vowel)) {
+  for (f in unique(pm_infl$formant)) {
+    vf <- filter(pm_infl, vowel==v, formant==f)
+    for (cntr in centres) {
+      vf$dists <- abs(cntr-vf$yob)
+      radius <- 0
+      n_in_radius <- 0
+      while (n_in_radius < nn) {
+        radius <- radius + 1
+        n_in_radius <- sum(vf$dists <= radius & vf$dists > 0)
+      }
+      dat <- subset(vf, dists > 0 & dists <= radius)
+      pm_infl$ip_upper[pm_infl$yob==cntr & pm_infl$vowel==v & pm_infl$formant==f] <- plogis(median(qlogis(dat$inflection_point), na.rm=T) + 2*IQR(qlogis(dat$inflection_point), na.rm=T))
+      pm_infl$ip_lower[pm_infl$yob==cntr & pm_infl$vowel==v & pm_infl$formant==f] <- plogis(median(qlogis(dat$inflection_point), na.rm=T) - 2*IQR(qlogis(dat$inflection_point), na.rm=T))
+    }
+  }
+}
+
+pm_infl <- pm_infl %>%
+  mutate(
+    inflection_point=
+           ifelse(
+             inflection_point > ip_upper | inflection_point < ip_lower,
+             NA,
+             inflection_point
+           )
+    ) %>%
+  ungroup() %>%
+  group_by(speaker) %>%
+  filter(!(sum(is.na(inflection_point)) > 0)) %>%
+  ungroup()
+
+pm_infl %>%
+  ggplot(aes(x=yob, y=inflection_point, col=following_voiceless)) +
+  facet_grid(~ vowel + formant) +
+  geom_line(aes(group=speaker), col="grey") +
+  geom_point() +
+  geom_point(aes(y=ip_upper), col="blue", size=0.2) +
+  geom_point(aes(y=ip_lower), col="blue", size=0.2)
+  
+  
+# random slope over following voiceless are *not* included:
+# due to the small number of data points per 
+# speaker (2 vowels * 2 formants * 2 following voiceless conditions = 8)
+# and even smaller number of data points per following voiceless cond
+# (2 * 2 = 4), these random slopes end up being estimated with a SD of 0,
+# but are computationally expensive + make the beta regression essentially
+# uninterpretable
+pm_infl_mod <- bam(inflection_point ~ vowel_sex_formant_vl +
+                     s(dur_avg_log, k=5) + 
+                     s(yob, by=vowel_sex_formant_vl, k=5) +
+                     s(speaker, bs="re"),
+                   data=pm_infl,
+                   family=betar(link="logit"))
+
+summary(pm_infl_mod)
+```
+
+Summary: all F1 timing changes are sig (and survive & even flourish after Bonferroni correction), but only male PRICE F2 is significant out of F2 timing changes. But don't read too much into significance due to exploratory nature of these tests. However, the patterns look extremely robust and correspond well with our visual impressions from the video / prediction plot from the previous section.
+
+Generating prediction plot
+
+```{r}
+
+newdat <- expand.grid(yob=seq(min(pm_infl$yob),max(pm_infl$yob),1),
+                      vowel_sex_formant_vl=unique(pm_infl$vowel_sex_formant_vl),
+                      dur_avg_log=median(pm_infl$dur_avg_log),
+                      speaker=pm_infl$speaker[1],
+                      following_voiceless=pm_infl$following_voiceless[1],
+                      formant=pm_infl$formant[1],
+                      inflection_point=0)
+
+
+#obtaining predictions from model
+infl_preds <- predict(pm_infl_mod, 
+                      newdata=newdat, 
+                      exclude=c("s(speaker)",
+                                "s(speaker,following_voiceless)",
+                                "s(speaker,formant)"),
+                      type="response",
+                      se.fit=T)
+newdat$inflection_point <- infl_preds$fit
+newdat$lower <- infl_preds$fit - 1.96*infl_preds$se.fit
+newdat$upper <- infl_preds$fit + 1.96*infl_preds$se.fit
+
+# splitting vowel_sex_formant_vl into its components for ggplot
+newdat$vowel <- unlist(lapply(as.character(newdat$vowel_sex_formant_vl), function (x) strsplit(x, split="[.]")[[1]][1]))
+newdat$vowel <- ifelse(newdat$vowel=='price', "PRICE", "MOUTH")
+newdat$sex <- unlist(lapply(as.character(newdat$vowel_sex_formant_vl), function (x) strsplit(x, split="[.]")[[1]][2]))
+newdat$sex <- ifelse(newdat$sex=='M', "male", "female")
+newdat$formant <- unlist(lapply(as.character(newdat$vowel_sex_formant_vl), function (x) strsplit(x, split="[.]")[[1]][3]))
+newdat$formant <- ifelse(newdat$formant=='f1_infl', "F1", "F2")
+newdat$vl <- unlist(lapply(as.character(newdat$vowel_sex_formant_vl), function (x) strsplit(x, split="[.]")[[1]][4]))
+newdat$vl <- ifelse(newdat$vl=="TRUE", "following voiceless", "following voiced")
+newdat$sig <- ifelse(newdat$formant=="F1" | (newdat$formant=="F2" & newdat$vowel=="PRICE" & newdat$sex=="male"), TRUE, FALSE)
+newdat$inflection_point <- newdat$inflection_point*100
+newdat$lower <- newdat$lower*100
+newdat$upper <- newdat$upper*100
+
+
+# raw data
+ggplot(filter(pm_infl), aes(x=yob, y=inflection_point, col=vowel, pch=following_voiceless)) +#alpha=sig)) +
+  facet_grid(sex~formant) +
+  #geom_ribbon(aes(ymin=lower, ymax=upper), col=NA, fill="grey", alpha=0.3) +
+  geom_point() +
+  geom_line(aes(group=interaction(speaker,vowel))) +
+  scale_color_manual(values=c("deepskyblue4","firebrick3")) +
+  #geom_text(data=labels, aes(label=vowel)) +
+  #geom_dl(aes(label=vowel), method="lines2") +
+  scale_y_continuous(breaks=seq(20,80,20),
+                     labels=c("20%", "40%", "60%", "80%")) +
+  xlab("year of birth") +
+  ylab("inflection point (% V duration)") +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text.y=element_text(size=16),
+        axis.text.x=element_text(size=16),# hjust=1, angle=25),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        legend.position = "none")
+
+# creating ggplot
+ggplot(newdat, aes(x=yob, 
+                   y=inflection_point, 
+                   group=interaction(vowel, vl), 
+                   col=vowel, 
+                   lty=vl,
+                   alpha=sig)) +
+  facet_grid(sex~formant) +
+  geom_ribbon(data=filter(newdat, sig),
+              aes(ymin=lower, ymax=upper), col=NA, fill="grey", 
+              alpha=0.3) +
+  geom_ribbon(data=filter(newdat, !sig),
+              aes(ymin=lower, ymax=upper), col=NA, fill="grey", 
+              alpha=0.1) +
+  # 8... sets of lines, four with labels
+  #### F1
+  # 1) F1 mouth voiced top
+  geom_textline(
+    data=filter(newdat, 
+                vowel=="MOUTH", 
+                formant=="F1", 
+                vl=="following voiced"),
+    aes(label=vowel),
+    vjust=-0.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  # 2) F1 price voiceless bottom
+  geom_textline(
+    data=filter(newdat, 
+                vowel=="PRICE", 
+                formant=="F1", 
+                vl=="following voiceless"),
+    aes(label=vowel),
+    vjust=1.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  # 3) F1 mouth voiceless x
+  # 4) F1 price voiced x
+  geom_line(
+    data=filter(newdat,
+                formant=="F1", 
+                (vowel=="MOUTH" & vl=="following voiceless") |
+                (vowel=="PRICE" & vl=="following voiced")),
+    lwd=1) +
+  #### F2
+  # 5) F2 mouth voiced bottom
+  geom_textline(
+    data=filter(newdat, 
+                vowel=="MOUTH", 
+                formant=="F2", 
+                vl=="following voiced"),
+    aes(label=vowel),
+    vjust=1.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  # 6) F2 price voiced top
+  geom_textline(
+    data=filter(newdat, 
+                vowel=="PRICE", 
+                formant=="F2", 
+                vl=="following voiced"),
+    aes(label=vowel),
+    vjust=-0.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  # 7) F2 mouth voiceless x
+  # 8) F2 price voiceless x
+  geom_line(
+    data=filter(newdat,
+                formant=="F2", 
+                (vowel=="MOUTH" & vl=="following voiceless") |
+                (vowel=="PRICE" & vl=="following voiceless")),
+    lwd=1) +
+  scale_color_manual(values=c("#1E88E5","#DC3220")) +
+  #geom_text(data=labels, aes(label=vowel)) +
+  #geom_dl(aes(label=vowel), method="lines2") +
+  scale_x_continuous(breaks=seq(1875,1975,25)) +
+  scale_y_continuous(breaks=seq(20,80,20),
+                     labels=c("20%", "40%", "60%", "80%"),
+                     limits=c(10,90)) +
+  scale_alpha_manual(values=c(0.25,1)) +
+  xlab("year of birth") +
+  ylab("inflection point (% V duration)") +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text.y=element_text(size=16, colour="black"),
+        axis.text.x=element_text(size=16, colour="black", hjust=1, angle=25),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        panel.grid.major.y=element_line(size=0.1, colour="darkgrey"),
+        legend.position = "none")
+ggsave("graphs/inflection_points.pdf", width=8, height=6)
+```
+
+Alternative model setup -- for testing significance of difference between voiced / voiceless.
+
+```{r}
+pm_infl <- pm_infl %>%
+  mutate(
+    price_female_f1 = as.numeric(vowel_sex_formant_vl=="price.F.f1_infl.FALSE" | vowel_sex_formant_vl=="price.F.f1_infl.TRUE"),
+    price_female_f1_vl = as.numeric(vowel_sex_formant_vl=="price.F.f1_infl.TRUE"),
+    price_female_f2 = as.numeric(vowel_sex_formant_vl=="price.F.f2_infl.FALSE" | vowel_sex_formant_vl=="price.F.f2_infl.TRUE"),
+    price_female_f2_vl = as.numeric(vowel_sex_formant_vl=="price.F.f2_infl.TRUE"),
+    price_male_f1 = as.numeric(vowel_sex_formant_vl=="price.M.f1_infl.FALSE" | vowel_sex_formant_vl=="price.M.f1_infl.TRUE"),
+    price_male_f1_vl = as.numeric(vowel_sex_formant_vl=="price.M.f1_infl.TRUE"),
+    price_male_f2 = as.numeric(vowel_sex_formant_vl=="price.M.f2_infl.FALSE" | vowel_sex_formant_vl=="price.M.f2_infl.TRUE"),
+    price_male_f2_vl = as.numeric(vowel_sex_formant_vl=="price.M.f2_infl.TRUE"),
+    mouth_female_f1 = as.numeric(vowel_sex_formant_vl=="mouth.F.f1_infl.FALSE" | vowel_sex_formant_vl=="mouth.F.f1_infl.TRUE"),
+    mouth_female_f1_vl = as.numeric(vowel_sex_formant_vl=="mouth.F.f1_infl.TRUE"),
+    mouth_female_f2 = as.numeric(vowel_sex_formant_vl=="mouth.F.f2_infl.FALSE" | vowel_sex_formant_vl=="mouth.F.f2_infl.TRUE"),
+    mouth_female_f2_vl = as.numeric(vowel_sex_formant_vl=="mouth.F.f2_infl.TRUE"),
+    mouth_male_f1 = as.numeric(vowel_sex_formant_vl=="mouth.M.f1_infl.FALSE" | vowel_sex_formant_vl=="mouth.M.f1_infl.TRUE"),
+    mouth_male_f1_vl = as.numeric(vowel_sex_formant_vl=="mouth.M.f1_infl.TRUE"),
+    mouth_male_f2 = as.numeric(vowel_sex_formant_vl=="mouth.M.f2_infl.FALSE" | vowel_sex_formant_vl=="mouth.M.f2_infl.TRUE"),
+    mouth_male_f2_vl = as.numeric(vowel_sex_formant_vl=="mouth.M.f2_infl.TRUE")
+  )
+
+pm_infl_mod <- bam(inflection_point ~ #vowel_sex_formant_vl +
+                     s(dur_avg_log, k=5) + 
+                     s(yob, by=price_female_f1, k=5) +
+                     s(yob, by=price_female_f1_vl, k=5) +
+                     s(yob, by=price_female_f2, k=5) +
+                     s(yob, by=price_female_f2_vl, k=5) +
+                     s(yob, by=price_male_f1, k=5) +
+                     s(yob, by=price_male_f1_vl, k=5) +
+                     s(yob, by=price_male_f2, k=5) +
+                     s(yob, by=price_male_f2_vl, k=5) +
+                     s(yob, by=mouth_female_f1, k=5) +
+                     s(yob, by=mouth_female_f1_vl, k=5) +
+                     s(yob, by=mouth_female_f2, k=5) +
+                     s(yob, by=mouth_female_f2_vl, k=5) +
+                     s(yob, by=mouth_male_f1, k=5) +
+                     s(yob, by=mouth_male_f1_vl, k=5) +
+                     s(yob, by=mouth_male_f2, k=5) +
+                     s(yob, by=mouth_male_f2_vl, k=5) +
+                     s(speaker, bs="re"),
+                   data=pm_infl,
+                   family=betar(link="logit"))
+
+summary(pm_infl_mod)
+```
+
+Plotting reparameterised model. (Looks essentially the same, but not identical -- likely minor differences due to reparameterisation.)
+
+```{r}
+newdat_template <- 
+  expand.grid(yob=seq(min(pm_infl$yob),max(pm_infl$yob),1),
+              price_female_f1=0,
+              price_female_f1_vl=0,
+              price_female_f2=0,
+              price_female_f2_vl=0,
+              price_male_f1=0,
+              price_male_f1_vl=0,
+              price_male_f2=0,
+              price_male_f2_vl=0,
+              mouth_female_f1=0,
+              mouth_female_f1_vl=0,
+              mouth_female_f2=0,
+              mouth_female_f2_vl=0,
+              mouth_male_f1=0,
+              mouth_male_f1_vl=0,
+              mouth_male_f2=0,
+              mouth_male_f2_vl=0,
+              dur_avg_log=median(pm_infl$dur_avg_log),
+              speaker=pm_infl$speaker[1],
+              inflection_point=0)
+
+newdat <- newdat_template[0,]
+
+for (v in c("price","mouth")) {
+  for (s in c("female","male")) {
+    for (f in c("f1", "f2")) {
+      nd1 <- newdat_template
+      nd2 <- newdat_template
+      nd1[,paste(v, s, f, sep="_")] <- 1
+      nd1[,paste(v, s, f, "vl", sep="_")] <- 0
+      nd2[,paste(v, s, f, sep="_")] <- 1
+      nd2[,paste(v, s, f, "vl", sep="_")] <- 1
+      newdat <- bind_rows(newdat, nd1, nd2)
+    }
+  }
+}
+
+#obtaining predictions from model
+infl_preds <- predict(pm_infl_mod_alt, 
+                      newdata=newdat, 
+                      exclude=c("s(speaker)",
+                                "s(speaker,following_voiceless)",
+                                "s(speaker,formant)"),
+                      type="response",
+                      se.fit=T)
+newdat$inflection_point <- infl_preds$fit
+newdat$lower <- infl_preds$fit - 1.96*infl_preds$se.fit
+newdat$upper <- infl_preds$fit + 1.96*infl_preds$se.fit
+
+# splitting vowel_sex_formant_vl into its components for ggplot
+newdat$vowel <- ifelse(newdat$price_female_f1 | newdat$price_female_f2 | newdat$price_male_f1 | newdat$price_male_f2, "PRICE", "MOUTH")
+newdat$sex <- ifelse(newdat$price_female_f1 | newdat$price_female_f2 | newdat$mouth_female_f1 | newdat$mouth_female_f2, "female", "male")
+newdat$formant <- ifelse(newdat$price_female_f1 | newdat$price_male_f1 | newdat$mouth_female_f1 | newdat$mouth_male_f1, "f1", "f2")
+newdat$vl <- ifelse(newdat$price_female_f1_vl | newdat$price_male_f1_vl | newdat$mouth_female_f1_vl | newdat$mouth_male_f1_vl | newdat$price_female_f2_vl | newdat$price_male_f2_vl | newdat$mouth_female_f2_vl | newdat$mouth_male_f2_vl, "following voiceless", "following voiced")
+newdat$inflection_point <- newdat$inflection_point*100
+newdat$lower <- newdat$lower*100
+newdat$upper <- newdat$upper*100
+
+#newdat$inflection_point <- newdat$inflection_point*100
+#newdat$lower <- newdat$lower*100
+#newdat$upper <- newdat$upper*100
+
+
+# labels for the plot
+
+labels <- data.frame(
+  vowel=c("PRICE","MOUTH","PRICE","MOUTH","PRICE","MOUTH","PRICE","MOUTH"),
+  sex=c("female","female","male","male","female","female","male","male"),
+  formant=c("F1","F1","F1","F1","F2","F2","F2","F2"),
+  sig=c(1,1,1,1,0.6,0.6,1,0.6),
+  yob=c(1930,1910,1930,1910,1930,1930,1930,1930),
+  inflection_point=c(5.5,8,5.5,8,5.2,2.7,5,2.7)*10
+)
+
+# creating ggplot
+ggplot(newdat, aes(x=yob, y=inflection_point, group=interaction(vowel, vl), col=vowel, lty=vl)) +#alpha=sig)) +
+  facet_grid(sex~formant) +
+  geom_ribbon(aes(ymin=lower, ymax=upper), col=NA, fill="grey", alpha=0.3) +
+  geom_line(lwd=1) +
+  scale_color_manual(values=c("deepskyblue4","firebrick3")) +
+  #geom_text(data=labels, aes(label=vowel)) +
+  #geom_dl(aes(label=vowel), method="lines2") +
+  #scale_y_continuous(breaks=seq(20,80,20),
+  #                   labels=c("20%", "40%", "60%", "80%"),
+  #                   limits=c(10,90)) +
+  xlab("year of birth") +
+  ylab("inflection point (% V duration)") +
+  theme_bw() +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text.y=element_text(size=16),
+        axis.text.x=element_text(size=16),# hjust=1, angle=25),
+        strip.text=element_text(size=16),
+        plot.title=element_text(size=18, face="bold"),
+        panel.grid=element_blank(),
+        legend.position = "none")
+#ggsave("graphs/inflection_points.pdf", width=5, height=5)
+```
+
+## Functional PCA analysis of F1 contours
+
+We run the PCA on voiced-only data; by-speaker averages are used as we are primarily interested in uncovering variation in curve shape across speakers.
+
+```{r}
+price_avg <- price %>%
+  filter(!following_voiceless) %>%
+  group_by(speaker, yob, sex) %>%
+  mutate(avg_dur=mean(dur)) %>%
+  ungroup() %>%
+  group_by(speaker, measurement_no, yob, sex) %>%
+  summarise(price_f1=mean(bark(f1)),
+            price_f2=mean(bark(f2)),
+            price_avg_dur=avg_dur[1]) %>%
+  ungroup() %>%
+  group_by(speaker) %>%
+  mutate(
+    price_f1_mean = mean(price_f1),
+    price_f1_c = price_f1 - price_f1_mean,
+    price_f2_mean = mean(price_f2),
+    price_f2_c = price_f2 - price_f2_mean,
+    measurement_count = n()) %>%
+  ungroup() %>%
+  filter(measurement_count == 11) %>%
+  dplyr::select(-measurement_count)
+
+
+mouth_avg <- mouth %>%
+  filter(!following_voiceless) %>%
+  group_by(speaker) %>%
+  mutate(avg_dur=mean(dur)) %>%
+  ungroup() %>%
+  group_by(speaker, measurement_no) %>%
+  summarise(mouth_f1=mean(bark(f1)),
+            mouth_f2=mean(bark(f2)),
+            mouth_avg_dur=avg_dur[1]) %>%
+  ungroup() %>%
+  group_by(speaker) %>%
+  mutate(
+    mouth_f1_mean = mean(mouth_f1),
+    mouth_f1_c = mouth_f1 - mouth_f1_mean,
+    mouth_f2_mean = mean(mouth_f2),
+    mouth_f2_c = mouth_f2 - mouth_f2_mean,
+    measurement_count = n()) %>%
+  ungroup() %>%
+  filter(measurement_count == 11) %>%
+  dplyr::select(-measurement_count)
+  
+
+# merging p & m
+pm_avg <- inner_join(price_avg, mouth_avg, by=c("speaker", "measurement_no")) %>%
+  mutate(speaker_f = factor(speaker))
+```
+
+For our smooths, we'll use the max number of knots (11) but we'll estimate lambda from the data using the following trick: we'll use a GAM to estimate smoothness, and then we'll pick a lambda value from the FDA smooths that minimises the distance to the GAM-fitted smooths. (This is because the lambda in mgcv is not directly comparable to the lambda in fda; and because the recommended GCV-based procedure leads to overfitting.)
+
+```{r}
+knots <- 11
+loglambdas <- seq(-5,5,0.2)
+
+# fit mgcv model
+lambda_mgcv_model <- 
+  bam(price_f2_c ~ s(measurement_no, speaker_f, bs="fs", xt=list(bs="bs"), k=11, m=c(3,2)),
+      data=pm_avg,
+      discrete=T, nthreads=8)
+
+#summary(lambda_mgcv_model)
+
+# generate predictions *in between observations*
+price_avg_alt <- pm_avg %>%
+  filter(measurement_no != 11) %>%
+  mutate(measurement_no = measurement_no + 0.5)
+
+price_avg_alt$price_f2_c_mgcv <- predict(lambda_mgcv_model,
+                                     newdata=price_avg_alt)
+inspect_random(lambda_mgcv_model, 1)
+
+# compute GCV errors + sum of squares for fda smooths at different lambdas vs. mgcv model predictions 
+gcv_errs <- list()
+sos <- list()
+for (l in 1:length(loglambdas)) {
+  norm_rng <- c(1,11)
+  knots <- 1:11
+  Lfdobj <- 3
+  norder <- 5 # 2 + Lfdobj 
+  nbasis <- length(knots) + norder - 2 # a fixed relation about B-splines
+  basis <- create.bspline.basis(norm_rng, nbasis, norder, knots)
+  fdPar <- fdPar(basis, Lfdobj, 10^loglambdas[l])
+  gcv_errs[[l]] <- rep(0, length(unique(pm_avg$speaker)))
+  sos[[l]] <- 0
+  for (s in 1:length(unique(pm_avg$speaker))) {
+    spe_dat <- filter(pm_avg, speaker==unique(pm_avg$speaker)[s]) %>% 
+      arrange(measurement_no)
+    spe_dat_alt <- filter(price_avg_alt, speaker==unique(price_avg_alt$speaker)[s]) %>% 
+      arrange(measurement_no)
+    sos[[l]] <- sos[[l]] + 
+      sum((spe_dat_alt$price_f2_c_mgcv -
+             predict(smooth.basis(spe_dat$measurement_no,spe_dat$price_f2_c,fdPar)$fd,
+                     newdata=spe_dat_alt$measurement_no))**2)
+    gcv_errs[[l]][s] <- smooth.basis(spe_dat$measurement_no,spe_dat$price_f2_c,fdPar)$gcv
+  }
+  cat("\r        \r", loglambdas[l])
+}
+```
+
+Analysing per-speaker & overall lambdas.
+
+```{r}
+per_speaker_lambdas <- 
+  lapply(
+    seq_along(gcv_errs),
+    function (x) data.frame(speaker=unique(pm_avg$speaker),
+                            loglambda=loglambdas[x],
+                            gcv_err=gcv_errs[[x]]
+      )
+    ) %>%
+  do.call(rbind, .)
+
+median_lambdas <- per_speaker_lambdas %>%
+  group_by(loglambda) %>%
+  summarise(gcv_err_med=median(gcv_err),
+            log_gcv_err_med=median(log(gcv_err)),
+            gcv_err_mean=mean(gcv_err),
+            log_gcv_err_mean=mean(log(gcv_err))) %>%
+  ungroup()
+
+ggplot(per_speaker_lambdas, aes(x=loglambda, y=gcv_err)) +
+  geom_line(aes(group=speaker), alpha=0.2) +
+  geom_line(data=median_lambdas, aes(y=gcv_err_med), col="blue", lwd=2) +
+  geom_line(data=median_lambdas, aes(y=gcv_err_mean), col="red", lwd=2)
+  
+ggplot(per_speaker_lambdas, aes(x=loglambda, y=log(gcv_err))) +
+  geom_line(aes(group=speaker), alpha=0.2) +
+  geom_line(data=median_lambdas, aes(y=log_gcv_err_med), col="blue", lwd=2) +
+  geom_line(data=median_lambdas, aes(y=log_gcv_err_mean), col="red", lwd=2)
+
+lambda_mins <- median_lambdas %>%
+  summarise(lambda_min_gcv_err_med=loglambda[which.min(gcv_err_med)],
+            lambda_min_log_gcv_err_med=loglambda[which.min(log_gcv_err_med)],
+            lambda_min_gcv_err_mean=loglambda[which.min(gcv_err_mean)],
+            lambda_min_log_gcv_err_mean=loglambda[which.min(log_gcv_err_mean)])
+
+# looking at sum of squares against mgcv model fit
+ggplot(data=NULL, aes(x=loglambdas, y=unlist(sos))) +
+  geom_line()
+
+loglambdas[which.min(unlist(sos))]
+```
+
+Quite a spread of values! The mgcv-based estimate is -1, and since that's perhaps the most principled one, I'll stick with that.
+
+```{r}
+loglambda_med = -2
+loglambda_mean = -2
+loglambda_mgcv = -1
+```
+
+Looking at some smooths plotted against raw data.
+
+```{r}
+set.seed(12341234) # Einstein on the Beach!
+speaker_sample <- pm_avg %>%
+  filter(speaker %in% sample(unique(speaker), 10, replace=F))
+
+# constructing example curves
+norm_rng <- c(1,11)
+knots <- 1:11
+Lfdobj <- 3
+norder <- 5 # 2 + Lfdobj 
+nbasis <- length(knots) + norder - 2 # a fixed relation about B-splines
+basis <- create.bspline.basis(norm_rng, nbasis, norder, knots)
+fdPar_med <- fdPar(basis, Lfdobj, 10^loglambda_med)
+fdPar_mean <- fdPar(basis, Lfdobj, 10^loglambda_mean)
+fdPar_mgcv <- fdPar(basis, Lfdobj, 10^loglambda_mgcv)
+
+speaker_sample <- speaker_sample %>%
+  group_by(speaker) %>%
+  mutate(f2_c_pred_med = predict(smooth.basis(measurement_no, price_f2_c, fdPar_med)$fd),
+         f2_c_pred_mean = predict(smooth.basis(measurement_no, price_f2_c, fdPar_mean)$fd),
+         f2_c_pred_mgcv = predict(smooth.basis(measurement_no, price_f2_c, fdPar_mgcv)$fd)) %>%
+  ungroup()
+
+ggplot(speaker_sample, aes(x=measurement_no)) +
+  facet_wrap(~speaker) +
+  geom_point(aes(y=price_f2_c)) +
+  geom_line(aes(y=f2_c_pred_med), col="blue", alpha=0.3) +
+  geom_line(aes(y=f2_c_pred_mean), col="red", alpha=0.3) +
+  geom_line(aes(y=f2_c_pred_mgcv), col="purple", alpha=0.3)
+```
+
+We'll settle on loglambda=-1. Now we encode *both* price f1 and mouth f1 as functional data objects.
+
+```{r}
+lambda = 10^(-1) 
+knots = 1:11
+norm_rng <- c(1,11)
+Lfdobj <- 3
+norder <- 5
+nbasis <- length(knots) + norder - 2
+basis_pm_F1 <- create.bspline.basis(norm_rng, nbasis, norder, knots)
+fdPar_pm_F1 <- fdPar(basis_pm_F1, Lfdobj, lambda)
+
+# price
+n_items <- length(unique(pm_avg$speaker))
+pm_F1_coefs = array(dim = c(nbasis,n_items,2))
+for (i in 1:n_items) {
+  spe_dat <- filter(pm_avg, speaker == unique(pm_avg$speaker)[i])
+  pm_F1_coefs[,i,1] = c(smooth.basis(spe_dat$measurement_no,spe_dat$price_f1_c,fdPar_pm_F1)$fd$coefs)
+  pm_F1_coefs[,i,2] = c(smooth.basis(spe_dat$measurement_no,spe_dat$mouth_f1_c,fdPar_pm_F1)$fd$coefs)
+}
+pm_F1_fd = fd(coef=pm_F1_coefs, basisobj=basis_pm_F1)
+```
+
+```{r}
+# usually a good solution is obtained by setting the same lambda and knots (thus basis) used for smoothing
+pcafdPar  <- fdPar(basis_pm_F1, 2, lambda)
+pm_pcafd <- pca.fd(pm_F1_fd, nharm=10, pcafdPar) # first three PCs
+
+# harmfd is the part of the PCA that we use for plotting
+pm_harmfd <- pm_pcafd[[1]]
+# create sequence of time-points to evaluate
+# FDA along
+x <- seq(1, 11, length = 100)
+# x coded as fd object using the same basis
+pm_fdmat <- eval.fd(x, pm_harmfd)
+# predictions at mean of data set
+pm_meanmat <- eval.fd(x, pm_pcafd$meanfd)
+
+pm_fac1 = sd(pm_pcafd$scores[,1])
+pm_fac2 = sd(pm_pcafd$scores[,2])
+pm_fac3 = sd(pm_pcafd$scores[,3])
+
+pm_vecharm.f1.1 <- pm_fdmat[,1,1]
+pm_vecharm.f1.2 <- pm_fdmat[,2,1]
+pm_vecharm.f1.3 <- pm_fdmat[,3,1]
+pm_vecharm.f2.1 <- pm_fdmat[,1,2]
+pm_vecharm.f2.2 <- pm_fdmat[,2,2]
+pm_vecharm.f2.3 <- pm_fdmat[,3,2]
+
+pm_pcafd$varprop
+```
+
+```{r}
+pm_pcs <- tibble(
+  speaker=unique(pm_avg$speaker),
+  pm_pc1=pm_pcafd$scores[,1],
+  pm_pc2=pm_pcafd$scores[,2],
+  pm_pc3=pm_pcafd$scores[,3]
+)
+both_avg_pca <- pm_avg %>%
+  dplyr::select(speaker, yob, sex) %>%
+  unique() %>%
+  left_join(
+    pm_pcs,
+    by="speaker"
+  )
+
+# PRICE
+ggplot(both_avg_pca, aes(x=yob, y=pm_pc1, col=sex)) +
+  geom_point() +
+  geom_smooth()
+ggplot(both_avg_pca, aes(x=yob, y=pm_pc2, col=sex)) +
+  geom_point() +
+  geom_smooth()
+ggplot(both_avg_pca, aes(x=yob, y=pm_pc3, col=sex)) +
+  geom_point() +
+  geom_smooth()
+
+pm_pc_gam <- bam(yob ~ s(pm_pc1) + s(pm_pc2) + ti(pm_pc1, pm_pc2) + s(pm_pc3), data=both_avg_pca, method="ML")
+summary(pm_pc_gam)
+plot(pm_pc_gam)
+```
+
+PRICE
+
+```{r}
+library(geomtextpath)
+library(ggpubr)
+newdat <- expand.grid(pm_pc1=seq(-3.5, 3.5, 0.01),
+                      pm_pc2=seq(-1.5, 1.5, 0.01),
+                      pm_pc3=median(both_avg_pca$pm_pc3))
+
+example_points <- data.frame(
+  pm_pc1_st=c(-1,1,0,0),
+  pm_pc2_st=c(0,0,-1,1)
+)
+
+newdat$yob <- predict(pm_pc_gam, newdata=newdat)
+newdat$pm_pc1_st <- (newdat$pm_pc1 - mean(both_avg_pca$pm_pc1)) / sd(both_avg_pca$pm_pc1)
+newdat$pm_pc2_st <- (newdat$pm_pc2 - mean(both_avg_pca$pm_pc2)) / sd(both_avg_pca$pm_pc2)
+both_avg_pca$pm_pc1_st <- scale(both_avg_pca$pm_pc1)
+both_avg_pca$pm_pc2_st <- scale(both_avg_pca$pm_pc2)
+
+main_plot <- ggplot(newdat, aes(y=pm_pc1_st, x=pm_pc2_st, z=yob)) +
+  coord_equal() +
+  geom_raster(aes(fill=yob)) +
+  geom_point(data=both_avg_pca, alpha=0.15, size=3, pch=16) +
+  geom_point(data=example_points, aes(z=NULL), size=5, col="black", pch=16) +
+  geom_textcontour(col=rgb(0.35,0,0,1), breaks=seq(1860,1980,20), 
+                   size=5, straight=T, fontface="bold", hjust=0.3) +
+  scale_colour_manual(values=c("black",rgb(0.35,0,0,1)), guide="none") +
+  scale_x_continuous(expand=expansion(0,0), limits=c(-2.5,2.5)) +
+  scale_y_continuous(expand=expansion(0,0), limits=c(-2.5,2.5)) +
+  scale_fill_distiller(palette = "Blues", guide="none") +
+  xlab("PC2 (20% of variance)") +
+  ylab("PC1 (52% of variance)") +
+  theme_minimal() +
+  #nz_vowels_theme +
+  theme(axis.text=element_blank(),
+        axis.title=element_text(size=16, face="bold"),
+        plot.margin=margin(t=0, unit="pt"))
+
+xs <- seq(1, 11, length = 100)
+pm_pc_dat <- expand.grid(
+  matrix_index=1:100,
+  vowel=1:2,
+  pc=1:2,
+  coef=c(-1,0,1)
+)
+pm_pc_dat$measurement_no <- xs[pm_pc_dat$matrix_index]
+pm_formant_means <- c(mean(pm_avg$price_f1_mean),mean(pm_avg$mouth_f1_mean))
+pm_pc_sds <- c(sd(both_avg_pca$pm_pc1),sd(both_avg_pca$pm_pc2))
+pm_pc_dat$baseline <- pm_formant_means[pm_pc_dat$vowel]
+pm_pc_dat$pc_sd <- pm_pc_sds[pm_pc_dat$pc]
+pm_pc_dat$value <- pm_meanmat[cbind(pm_pc_dat$matrix_index,1,pm_pc_dat$vowel)] + pm_pc_dat$coef * pm_pc_dat$pc_sd * pm_fdmat[cbind(pm_pc_dat$matrix_index,pm_pc_dat$pc,pm_pc_dat$vowel)]
+pm_pc_dat$vowel_lab <- c("PRICE","MOUTH")[pm_pc_dat$vowel]
+
+PC1_plot <- 
+  ggplot(filter(pm_pc_dat, coef!=0, pc==1), 
+                   aes(x=measurement_no, y=value)) +
+  facet_grid(
+    I(-1*coef)~., 
+             
+    labeller=as_labeller(c(`1`="F1 (Bark)", `-1`="F1 (Bark)"))) +
+  geom_textline(
+    data=filter(pm_pc_dat, coef!=0, pc==1, vowel_lab=="PRICE"),
+    aes(col=factor(vowel_lab),
+        label=factor(vowel_lab)
+    ),
+    hjust=0.2,
+    vjust=-0.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  geom_textline(
+    data=filter(pm_pc_dat, coef!=0, pc==1, vowel_lab=="MOUTH"),
+    aes(col=factor(vowel_lab),
+        label=factor(vowel_lab)
+    ),
+    hjust=0.2,
+    vjust=1.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  scale_colour_manual(values=c("#1E88E5","#DC3220"), guide="none") +
+  scale_y_continuous(position="right", limits=c(-0.8,0.42)) +
+  scale_x_continuous(breaks=seq(1,11,length.out=5),
+                     labels=paste0(seq(0,100,length.out=5), "%")) +
+  #ylab("F1 (bark)") +
+  xlab("% vowel duration") +
+  coord_fixed(ratio=6) +
+  theme_minimal() +
+  #nz_vowels_theme +
+  theme(axis.text.x=element_text(size=14, colour="black"),
+        axis.text.y=element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=16, face="bold"),
+        panel.grid=element_blank(),
+        panel.grid.major.x=element_line(size=0.1, colour="darkgrey"),
+        strip.text=element_text(size=16, face="bold"),
+        panel.border=element_rect(fill=NA, size=1.5),
+        panel.spacing=unit(0.1, "npc"))
+
+PC2_plot <- 
+  ggplot(filter(pm_pc_dat, coef!=0, pc==2), 
+                   aes(x=measurement_no, y=value)) +
+  facet_grid(
+    .~I(coef)) +
+  geom_textline(
+    data=filter(pm_pc_dat, coef!=0, pc==2, vowel_lab=="PRICE"),
+    aes(col=factor(vowel_lab),
+        label=factor(vowel_lab)
+    ),
+    hjust=0.2,
+    vjust=-0.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  geom_textline(
+    data=filter(pm_pc_dat, coef!=0, pc==2, vowel_lab=="MOUTH"),
+    aes(col=factor(vowel_lab),
+        label=factor(vowel_lab)
+    ),
+    hjust=0.2,
+    vjust=1.5,
+    size=5, fontface="bold",
+    linewidth=1) +
+  scale_colour_manual(values=c("#1E88E5","#DC3220"), guide="none") +
+  scale_y_continuous(position="left", limits=c(-0.8,0.42)) +
+  scale_x_continuous(breaks=seq(1,11,length.out=5),
+                     labels=paste0(seq(0,100,length.out=5), "%"),
+                     position="top") +
+  ylab("F1 (bark)") +
+  xlab("% vowel duration") +
+  coord_fixed(ratio=6) +
+  theme_minimal() +
+  #nz_vowels_theme +
+  theme(axis.text.x=element_text(size=14, colour="black"),
+        axis.text.y=element_blank(),
+        axis.title.y=element_text(size=16, face="bold"),
+        axis.title.x=element_text(size=16, face="bold"),
+        panel.grid=element_blank(),
+        panel.grid.major.x=element_line(size=0.1, colour="darkgrey"),
+        strip.text=element_blank(),
+        panel.border=element_rect(fill=NA, size=1.5),
+        panel.spacing=unit(0.05, "npc"),
+        plot.margin=margin(t=0.5,b=-0.5, unit="cm"))
+```
+
+```{r}
+pdf("graphs/pc_plot.pdf", width=8, height=8)
+ggarrange(PC2_plot, NULL, main_plot, PC1_plot,
+          ncol=2, nrow=2,
+          widths=c(2,1),
+          heights=c(0.70,2))
+grid.lines(x=c(0.35,0.675), y=c(0.261,0.261), gp=gpar(lwd=2, lty=2))
+grid.lines(x=c(0.35,0.675), y=c(0.5135,0.5135), gp=gpar(lwd=2, lty=2))
+grid.lines(x=c(0.2255,0.2255), y=c(0.38725,0.715), gp=gpar(lwd=2, lty=2))
+grid.lines(x=c(0.478,0.478), y=c(0.38725,0.715), gp=gpar(lwd=2, lty=2))
+dev.off()
+```
